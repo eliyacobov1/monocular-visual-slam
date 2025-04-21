@@ -1,5 +1,8 @@
 import numpy as np
 import cv2
+import heapq
+import numpy as np
+import matplotlib.pyplot as plt
 from typing import List, Tuple
 
 class DrivableAreaBuilder:
@@ -48,3 +51,69 @@ class DrivableAreaBuilder:
         road_mask = self.extract_road(segmentation_mask)
         final_mask = self.apply_obstacle_mask(road_mask, detections)
         return final_mask
+
+def heuristic(a, b):
+    # Manhattan distance
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+def get_neighbors(pos, rows, cols):
+    i, j = pos
+    neighbors = []
+    for di, dj in [(-1,0),(1,0),(0,-1),(0,1)]:
+        ni, nj = i+di, j+dj
+        if 0 <= ni < rows and 0 <= nj < cols:
+            neighbors.append((ni, nj))
+    return neighbors
+
+def reconstruct_path(came_from, current):
+    path = [current]
+    while current in came_from:
+        current = came_from[current]
+        path.append(current)
+    path.reverse()
+    return path
+
+def astar(grid, start, goal):
+    rows, cols = grid.shape
+    open_set = []
+    heapq.heappush(open_set, (0, start))
+    came_from = {}
+    g_score = {start: 0}
+    f_score = {start: heuristic(start, goal)}
+
+    while open_set:
+        _, current = heapq.heappop(open_set)
+        if current == goal:
+            return reconstruct_path(came_from, current)
+        for neighbor in get_neighbors(current, rows, cols):
+            if grid[neighbor] == 0:
+                continue
+            tentative_g_score = g_score[current] + 1
+            if neighbor not in g_score or tentative_g_score < g_score[neighbor]:
+                came_from[neighbor] = current
+                g_score[neighbor] = tentative_g_score
+                f_score[neighbor] = tentative_g_score + heuristic(neighbor, goal)
+                heapq.heappush(open_set, (f_score[neighbor], neighbor))
+    return []
+
+# Example usage:
+# 1 = road, 0 = obstacle
+grid = np.zeros((100, 200), dtype=int)
+grid[40:90, 50:150] = 1  # Simulated road
+grid[60:70, 100:110] = 0  # Obstacle
+
+start = (85, 60)
+goal = (45, 140)
+
+path = astar(grid, start, goal)
+
+# Visualization
+plt.imshow(grid, cmap='gray')
+if path:
+    path_y, path_x = zip(*path)
+    plt.plot(path_x, path_y, color='red')
+plt.scatter(start[1], start[0], c='green', marker='o', label='Start')
+plt.scatter(goal[1], goal[0], c='blue', marker='x', label='Goal')
+plt.legend()
+plt.title("A* Path on Drivable Area")
+plt.show()
