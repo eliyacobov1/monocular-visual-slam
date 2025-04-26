@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import time
 
 BRESENHAM_CIRCLE_16_PIXELS = np.array([
     (0, -3), (1, -3), (2, -2), (3, -1),
@@ -7,6 +8,9 @@ BRESENHAM_CIRCLE_16_PIXELS = np.array([
     (0, 3), (-1, 3), (-2, 2), (-3, 1),
     (-3, 0), (-3, -1), (-2, -2), (-1, -3)
 ])
+
+# Indexes of North, East, South, West
+NEIGHBOR_IDXS = np.array([0, 4, 8, 12])
 
 def generate_point_pairs(patch_size, num_pairs, seed=42):
     np.random.seed(seed)
@@ -79,19 +83,32 @@ def compute_brief_descriptors(img, keypoints, angles, patch_size=31, num_pairs=2
 
 def is_corner(img: np.ndarray, x, y, threshold, contiguous=12):
     center_intensity = img[y, x]
+
     circle_vals = img[
-        np.clip(y + BRESENHAM_CIRCLE_16_PIXELS[:, 1], 0, img.shape[0]-1),
-        np.clip(x + BRESENHAM_CIRCLE_16_PIXELS[:, 0], 0, img.shape[1]-1)
+        y + BRESENHAM_CIRCLE_16_PIXELS[NEIGHBOR_IDXS, 1],
+        x + BRESENHAM_CIRCLE_16_PIXELS[NEIGHBOR_IDXS, 0]
     ]
 
-    bright = circle_vals > center_intensity + threshold
-    dark = circle_vals < center_intensity - threshold
+    brighter = (circle_vals > center_intensity + threshold).sum()
+    darker = (circle_vals < center_intensity - threshold).sum()
+    
+    if max(brighter, darker) < 3:  # require at least 3 of 4 to be brighter or darker
+        return False
 
-    def is_n_contigous_vals(arr: np.ndarray, val, n):
-        arr_extended = np.concatenate([arr, arr[:n-1]])    
-        return np.convolve(arr_extended, np.full(n, val, dtype=arr.dtype), mode='valid').max() == n
+    circle_vals_full = img[
+        y + BRESENHAM_CIRCLE_16_PIXELS[:, 1],
+        x + BRESENHAM_CIRCLE_16_PIXELS[:, 0]
+    ]
+    bright = circle_vals_full > center_intensity + threshold
+    dark = circle_vals_full < center_intensity - threshold
 
-    return is_n_contigous_vals(bright, True, contiguous) or is_n_contigous_vals(dark, True, contiguous)
+    arr_extended = np.concatenate([bright, bright[:contiguous-1]])
+    bright_contig = np.convolve(arr_extended, np.ones(contiguous, dtype=int), mode='valid').max() >= contiguous
+
+    arr_extended = np.concatenate([dark, dark[:contiguous-1]])
+    dark_contig = np.convolve(arr_extended, np.ones(contiguous, dtype=int), mode='valid').max() >= contiguous
+
+    return bright_contig or dark_contig
 
 def fast_detect(img, threshold=20, contiguous=12):
     h, w = img.shape
@@ -99,7 +116,7 @@ def fast_detect(img, threshold=20, contiguous=12):
     for y in range(3, h - 3):
         for x in range(3, w - 3):
             if is_corner(img, x, y, threshold, contiguous):
-                kp = cv2.KeyPoint(x=float(x), y=float(y), _size=7)
+                kp = cv2.KeyPoint(x=float(x), y=float(y), size=7)
                 keypoints.append(kp)
     return keypoints
 

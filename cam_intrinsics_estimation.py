@@ -75,6 +75,12 @@ def estimate_intrinsics_from_matched_points(matched_pairs, image_shape, label1='
 
     return K
 
+def make_K(width, height, fov_x_deg=90):
+    f = width / (2 * np.tan(np.deg2rad(fov_x_deg) / 2))
+    return np.array([[f, 0, width/2],
+                     [0, f, height/2],
+                     [0, 0,        1 ]], dtype=np.float64)
+
 # ======= EXAMPLE USAGE =======
 if __name__ == "__main__":
     # Simulated matched keypoints (should come from actual feature tracking)

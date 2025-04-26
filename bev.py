@@ -19,27 +19,41 @@ def get_extrinsics(pitch_deg, camera_height):
     t = np.array([[0], [0], [-camera_height]])
     return R, t
 
+def compute_ground_to_image_homography(K, pitch_deg, camera_height):
+    pitch = np.deg2rad(pitch_deg)
+
+    # R : world → camera  (positive pitch = camera tips down)
+    R = np.array([[1, 0,               0],
+                  [0, np.cos(pitch),  -np.sin(pitch)],
+                  [0, np.sin(pitch),   np.cos(pitch)]])
+
+    # Camera is h metres above the ground, i.e. –h along WORLD‑Y
+    t = np.array([[0], [-camera_height], [0]])
+
+    # Keep X (left–right) and Z (forward) columns of R
+    H_world2img = K @ np.hstack((R[:, [0, 2]], t))
+    return H_world2img
+
 def compute_homography(K, R, t):
     # Ground plane assumption: Z = 0, so we use only R[:, :2]
     H_world_to_img = K @ np.hstack((R[:, :2], t))
     return H_world_to_img
 
-def generate_bev_remap(H_world_to_img, bev_size_m, resolution):
-    bev_w_m, bev_h_m = bev_size_m
+def generate_bev_remap(H, bev_size_m, resolution):
+    bev_w_m, bev_l_m = bev_size_m        # width  (X), length (Z)
     bev_w_px = int(bev_w_m / resolution)
-    bev_h_px = int(bev_h_m / resolution)
+    bev_l_px = int(bev_l_m / resolution)
 
-    # Grid in world coordinates
-    x_vals = np.linspace(-bev_w_m/2, bev_w_m/2, bev_w_px)
-    y_vals = np.linspace(0, bev_h_m, bev_h_px)
-    X, Y = np.meshgrid(x_vals, y_vals)
+    x_vals = np.linspace(-bev_w_m/2, bev_w_m/2, bev_w_px)   # left → right
+    z_vals = np.linspace(0, bev_l_m,   bev_l_px)            # near → far
+    X, Z = np.meshgrid(x_vals, z_vals)
 
-    world_coords = np.stack([X.ravel(), Y.ravel(), np.ones_like(X).ravel()], axis=0)
-    img_coords = H_world_to_img @ world_coords
-    img_coords /= img_coords[2]
+    world_pts = np.stack([X.ravel(), Z.ravel(), np.ones_like(X).ravel()], 0)
+    img_pts   = H @ world_pts
+    img_pts  /= img_pts[2]                                  # normalise
 
-    map_x = img_coords[0].reshape(bev_h_px, bev_w_px).astype(np.float32)
-    map_y = img_coords[1].reshape(bev_h_px, bev_w_px).astype(np.float32)
+    map_x = img_pts[0].reshape(bev_l_px, bev_w_px).astype(np.float32)
+    map_y = img_pts[1].reshape(bev_l_px, bev_w_px).astype(np.float32)
     return map_x, map_y
 
 def generate_bev_image(image, map_x, map_y):
