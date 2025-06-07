@@ -15,7 +15,8 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format='INFO::cv2_e2e - %(message)s')
 
-SAMPLE_VIDEO_PATH = "4644521-uhd_2562_1440_30fps.mp4"
+# SAMPLE_VIDEO_PATH = "4644521-uhd_2562_1440_30fps.mp4"
+SAMPLE_VIDEO_PATH = "sharp_curve.mp4"
 
 FeatureDetector_t = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 
