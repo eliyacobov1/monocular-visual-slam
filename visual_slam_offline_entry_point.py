@@ -8,12 +8,12 @@ import matplotlib.pyplot as plt
 
 import feature_detection.fast as fast
 from slam_path_estimator import VehiclePathLiveAnimator
-from homography import estimate_homography_from_orb, estimate_pose_from_orb
+from homography import estimate_homography_from_orb
 from cam_intrinsics_estimation import make_K
 from bev import generate_bev_image, generate_bev_remap, get_extrinsics, compute_ground_to_image_homography
 import logging
 
-logging.basicConfig(level=logging.INFO, format='INFO::cv2_e2e - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(levelname)s::cv2_e2e - %(message)s')
 
 # SAMPLE_VIDEO_PATH = "4644521-uhd_2562_1440_30fps.mp4"
 SAMPLE_VIDEO_PATH = "sharp_curve.mp4"
@@ -111,8 +111,15 @@ if __name__ == "__main__":
         #     gray_additional_frame, keypoints, None,
         #     flags=cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS
         # )
-        K = make_K(curr_img.shape[1], curr_img.shape[0]) # currently estimating K by assuming FOV
-        R, t = estimate_pose_from_orb(prev_keypoints, prev_desc, curr_keypoints, curr_desc, K)
+        K = make_K(curr_img.shape[1], curr_img.shape[0])  # estimate intrinsics
+        try:
+            H, R, t = estimate_homography_from_orb(prev_keypoints, prev_desc,
+                                                  curr_keypoints, curr_desc, K)
+            logging.debug("Homography:\n%s", H)
+        except Exception as exc:
+            logging.warning("Homography estimation failed: %s", exc)
+            prev_frame = curr_img
+            continue
         
         # TODO: this is for testing BEV only
         # pitch_deg = 5
