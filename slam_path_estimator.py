@@ -1,12 +1,22 @@
-import numpy as np
-import matplotlib.pyplot as plt
+"""Minimal live vehicle path visualiser for offline SLAM demos."""
+
+from __future__ import annotations
+
+import logging
 import threading
 import time
 
+import matplotlib.pyplot as plt
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
 class VehiclePathLiveAnimator:
-    def __init__(self):
-        self.poses = [np.eye(3)]
-        self.positions = [np.array([0.0, 0.0])]
+    """Maintain and plot the estimated vehicle trajectory."""
+
+    def __init__(self) -> None:
+        self.poses: list[np.ndarray] = [np.eye(3)]
+        self.positions: list[np.ndarray] = [np.array([0.0, 0.0])]
         self.new_data_available = False
         self.running = True
         self.lock = threading.Lock()
@@ -29,7 +39,10 @@ class VehiclePathLiveAnimator:
         self.update_thread = threading.Thread(target=self._update_plot_loop)
         self.update_thread.start()
 
-    def add_transform(self, R, t):
+    def add_transform(self, R: np.ndarray, t: np.ndarray) -> None:
+        """Append a relative pose to the path."""
+        logger.debug("Adding transform R=%s t=%s", R.tolist(), t.tolist())
+
         with self.lock:
             pose_delta = np.eye(3)
             pose_delta[:2, :2] = R[:2, :2]
@@ -68,6 +81,8 @@ class VehiclePathLiveAnimator:
             time.sleep(0.05)  # Sleep a bit to avoid busy-waiting
 
     def stop(self):
+        """Terminate the background plot thread and display the result."""
+
         self.running = False
         self.update_thread.join()
         plt.ioff()
