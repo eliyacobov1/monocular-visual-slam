@@ -5,6 +5,8 @@ import time
 import numpy as np
 from typing import Callable
 import matplotlib.pyplot as plt
+import argparse
+import os
 
 import feature_detection.fast as fast
 from slam_path_estimator import VehiclePathLiveAnimator
@@ -95,9 +97,23 @@ def load_video_frames(path, resize=(1080, 1920), max_frames=50):
     # return frames_np
 
 
-if __name__ == "__main__":
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Offline visual SLAM demo")
+    parser.add_argument(
+        "--video",
+        default=os.environ.get("SAMPLE_VIDEO_PATH", SAMPLE_VIDEO_PATH),
+        help="Path to the input video",
+    )
+    parser.add_argument(
+        "--max_frames",
+        type=int,
+        default=10000,
+        help="Maximum number of frames to process",
+    )
+    args = parser.parse_args()
+
     path_estimator = VehiclePathLiveAnimator()
-    frames = load_video_frames(SAMPLE_VIDEO_PATH, max_frames=10000)
+    frames = load_video_frames(args.video, max_frames=args.max_frames)
     prev_frame = next(frames)
 
     for frame in frames:
@@ -147,3 +163,7 @@ if __name__ == "__main__":
     # plt.subplots_adjust(left=0, right=1, top=1, bottom=0)  # Remove padding
     # plt.imshow(frame_with_keypoints)
     # plt.show()
+
+
+if __name__ == "__main__":
+    main()
