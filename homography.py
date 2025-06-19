@@ -216,6 +216,135 @@ def ransac_homography(
     return refined_H, best_inliers
 
 
+# ---------------------  Essential matrix utilities  ------------------------ #
+
+
+def eight_point_E(src: np.ndarray, dst: np.ndarray, K: np.ndarray) -> np.ndarray:
+    """Compute the essential matrix using the eight-point algorithm."""
+    n = len(src)
+    if n < 8:
+        raise ValueError("Eight correspondences required")
+
+    Kinv = np.linalg.inv(K)
+    src_h = np.hstack([src, np.ones((n, 1))])
+    dst_h = np.hstack([dst, np.ones((n, 1))])
+    x1 = (Kinv @ src_h.T).T
+    x2 = (Kinv @ dst_h.T).T
+
+    A = []
+    for p1, p2 in zip(x1, x2):
+        x, y, _ = p1 / p1[2]
+        u, v, _ = p2 / p2[2]
+        A.append([u * x, u * y, u, v * x, v * y, v, x, y, 1])
+    A = np.asarray(A)
+
+    _, _, Vt = np.linalg.svd(A)
+    F = Vt[-1].reshape(3, 3)
+
+    U, S, Vt = np.linalg.svd(F)
+    S[2] = 0.0
+    F = U @ np.diag(S) @ Vt
+
+    return K.T @ F @ K
+
+
+def decompose_essential(E: np.ndarray, src: np.ndarray, dst: np.ndarray, K: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Recover the correct R,t pair from the essential matrix."""
+    U, _, Vt = np.linalg.svd(E)
+    if np.linalg.det(U) < 0:
+        U *= -1
+    if np.linalg.det(Vt) < 0:
+        Vt *= -1
+
+    W = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
+
+    candidates = [
+        (U @ W @ Vt, U[:, 2]),
+        (U @ W @ Vt, -U[:, 2]),
+        (U @ W.T @ Vt, U[:, 2]),
+        (U @ W.T @ Vt, -U[:, 2]),
+    ]
+
+    def triangulate(P1, P2, p1, p2):
+        A = np.vstack([
+            p1[0] * P1[2] - P1[0],
+            p1[1] * P1[2] - P1[1],
+            p2[0] * P2[2] - P2[0],
+            p2[1] * P2[2] - P2[1],
+        ])
+        _, _, Vt = np.linalg.svd(A)
+        X = Vt[-1]
+        return X[:3] / X[3]
+
+    src_h = np.hstack([src, np.ones((len(src), 1))])
+    dst_h = np.hstack([dst, np.ones((len(dst), 1))])
+
+    P1 = K @ np.hstack([np.eye(3), np.zeros((3, 1))])
+
+    best = None
+    best_count = -1
+    for R, t in candidates:
+        P2 = K @ np.hstack([R, t.reshape(3, 1)])
+        count = 0
+        for x1, x2 in zip(src_h, dst_h):
+            X = triangulate(P1, P2, x1, x2)
+            if X[2] > 0 and (R @ X + t)[2] > 0:
+                count += 1
+        if count > best_count:
+            best = (R, t)
+            best_count = count
+
+    if best is None:
+        raise RuntimeError("Essential matrix decomposition failed")
+    return best
+
+
+def ransac_essential(
+    src: np.ndarray,
+    dst: np.ndarray,
+    K: np.ndarray,
+    th: float = 0.01,
+    max_iter: int = 2000,
+    rng: np.random.Generator | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate an essential matrix with a basic RANSAC loop."""
+    n = len(src)
+    if n < 8:
+        raise ValueError("At least eight correspondences are required")
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    best_E = None
+    best_inliers = np.array([], dtype=int)
+
+    src_h = np.hstack([src, np.ones((n, 1))])
+    dst_h = np.hstack([dst, np.ones((n, 1))])
+
+    for _ in range(max_iter):
+        idx = rng.choice(n, 8, replace=False)
+        E = eight_point_E(src[idx], dst[idx], K)
+
+        Ex1 = (E @ src_h.T).T
+        Etx2 = (E.T @ dst_h.T).T
+        err = np.abs(np.sum(dst_h * (E @ src_h.T).T, axis=1))
+        denom = Ex1[:, 0] ** 2 + Ex1[:, 1] ** 2 + Etx2[:, 0] ** 2 + Etx2[:, 1] ** 2
+        err = err ** 2 / denom
+        inliers = np.flatnonzero(err < th ** 2)
+
+        if inliers.size > best_inliers.size:
+            best_E = E
+            best_inliers = inliers
+            if inliers.size > 0.8 * n:
+                break
+
+    if best_E is None or best_inliers.size < 8:
+        raise RuntimeError("RANSAC essential matrix failed")
+
+    refined_E = eight_point_E(src[best_inliers], dst[best_inliers], K)
+    return refined_E, best_inliers
+
+
 # ---------------------  pipeline entry point ------------------------------ #
 
 
@@ -236,6 +365,7 @@ def estimate_homography_from_orb(kp1, desc1, kp2, desc2, K=np.eye(3)):
 
 
 def estimate_pose_from_orb(kp1, des1, kp2, des2, K):
+    """Estimate camera pose using our minimal essential matrix implementation."""
     matches = match_orb_descriptors(des1, des2)
     if len(matches) < 15:
         raise RuntimeError("too few matches")
@@ -243,17 +373,9 @@ def estimate_pose_from_orb(kp1, des1, kp2, des2, K):
     pts1 = np.float32([kp1[i].pt for i, _ in matches])
     pts2 = np.float32([kp2[j].pt for _, j in matches])
 
-    # (1) Essential matrix with RANSAC (five‑point inside OpenCV)
-    E, inliers = cv2.findEssentialMat(
-        pts1, pts2, K, method=cv2.USAC_MAGSAC, prob=0.999, threshold=1.0
-    )
-
-    # (2) Recover the only physically valid pose
-    _, R, t, _ = cv2.recoverPose(
-        E, pts1[inliers.ravel() == 1], pts2[inliers.ravel() == 1], K
-    )
-
-    return R, t.reshape(-1)
+    E, inliers = ransac_essential(pts1, pts2, K)
+    R, t = decompose_essential(E, pts1[inliers], pts2[inliers], K)
+    return R, t
 
 
 # ---------------------  (optional) essential matrix variant  --------------- #
