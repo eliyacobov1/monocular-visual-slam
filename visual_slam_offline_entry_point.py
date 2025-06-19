@@ -8,13 +8,11 @@ import matplotlib.pyplot as plt
 import argparse
 import os
 
-import feature_detection.fast as fast
 from slam_path_estimator import VehiclePathLiveAnimator
 from loop_closure import BoWDatabase
 from pose_graph import PoseGraph
 from homography import estimate_homography_from_orb
 from cam_intrinsics_estimation import make_K
-from bev import generate_bev_image, generate_bev_remap, get_extrinsics, compute_ground_to_image_homography
 import logging
 
 logging.basicConfig(level=logging.DEBUG, format='%(levelname)s::cv2_e2e - %(message)s')
@@ -159,7 +157,7 @@ def main() -> None:
         curr_img, prev_img = frame, prev_frame
         cv2_orb_detector: FeatureDetector_t = lambda img: cv2.ORB_create().detectAndCompute(img, None)
         cv2_sift_detector: FeatureDetector_t = lambda img: cv2.SIFT_create().detectAndCompute(img, None)
-        # custom_orb_detector: FeatureDetector_t = lambda img: fast.orb_detect_and_compute(img)
+        # custom_orb_detector: FeatureDetector_t = lambda img: my_custom_orb(img)
         prev_keypoints, prev_desc = orb_detect(prev_img, cv2_orb_detector)
         curr_keypoints, curr_desc = orb_detect(curr_img, cv2_orb_detector)
         mask = compute_dynamic_mask(prev_img, curr_img) if args.semantic_masking else None
@@ -179,19 +177,7 @@ def main() -> None:
             prev_frame = curr_img
             continue
         
-        # TODO: this is for testing BEV only
-        # pitch_deg = 5
-        # camera_height = 1.6
-        # R_extrinsic, t_extrinsic = get_extrinsics(pitch_deg, camera_height)
-        # H = compute_ground_to_image_homography(K, pitch_deg, camera_height)
-        # resolution = 0.05  # meters per pixel
-        # bev_size_m = (10, 20)  # width x height in meters
-        # map_x, map_y = generate_bev_remap(H, bev_size_m, resolution)
-        # bev_image = generate_bev_image(curr_img, map_x, map_y)
-        # plt.imsave("bev_image.png", bev_image, cmap='gray')
-        # import sys
-        # sys.exit(0)
-        # TODO: this is for testing BEV only
+
         
         # H, R, t = estimate_homography_from_sift(prev_keypoints, prev_desc, curr_keypoints, curr_desc)
         pose_graph.add_pose(R, t)

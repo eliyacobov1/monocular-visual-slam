@@ -4,15 +4,10 @@ Collection of small yet self‑contained algorithms for demonstrating offline
 computer vision pipelines:
 
 * **Visual SLAM prototype** (see `visual_slam_offline_entry_point.py`) using
-  ORB features and a RANSAC‑robust homography.  Results are visualised with
+  ORB features and a RANSAC‑robust homography. Results are visualised with
   `VehiclePathLiveAnimator`.
-* **Advanced lane detection** with the YOLOP deep model and IPM warping
-  (`advanced_lane_detection.py`).
-* **Pure NumPy lane detector** implementing Gaussian blur, Sobel edges and
-  Hough transform (`lane_detection.py`).
-* **BEV utilities** for ground plane homography and bird’s‑eye view generation
-  (`bev.py`).
-* **Occupancy grid mapping** from depth images (`free_space.py`).
+* **Pose‑graph optimiser and loop‑closure utilities** used by the SLAM demo
+  (`pose_graph.py`, `loop_closure.py`).
 
 ### Development
 
