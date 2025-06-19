@@ -141,6 +141,11 @@ def main() -> None:
         action="store_true",
         help="Mask dynamic regions before feature detection",
     )
+    parser.add_argument(
+        "--save_plot",
+        help="Path to save the final trajectory plot",
+        default=None,
+    )
     args = parser.parse_args()
 
     path_estimator = VehiclePathLiveAnimator()
@@ -195,6 +200,7 @@ def main() -> None:
             try:
                 _, R_loop, t_loop = estimate_homography_from_orb(loop_kp, loop_desc, curr_keypoints, curr_desc, K)
                 pose_graph.add_loop(loop_id, frame_id, R_loop, t_loop)
+                path_estimator.add_loop_edge(loop_id, frame_id)
                 optimized = pose_graph.optimize()
                 path_estimator.set_optimized_poses(optimized)
                 orig = np.array([p[:2,2] for p in pose_graph.poses])
@@ -209,7 +215,7 @@ def main() -> None:
         prev_frame = curr_img
         time.sleep(0.1)  # simulate results arriving slowly
         plt.pause(0.001)  # <-- THIS IS CRITICAL!!!
-    path_estimator.stop()
+    path_estimator.stop(args.save_plot)
 
     # plt.axis('off')
     # plt.gca().set_position([0, 0, 1, 1])  # Fill the entire figure
