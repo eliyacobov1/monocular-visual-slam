@@ -16,7 +16,9 @@ class VehiclePathLiveAnimator:
 
     def __init__(self) -> None:
         self.poses: list[np.ndarray] = [np.eye(3)]
+        self.optimized_poses: list[np.ndarray] | None = None
         self.positions: list[np.ndarray] = [np.array([0.0, 0.0])]
+        self.optimized_positions: list[np.ndarray] | None = None
         self.new_data_available = False
         self.running = True
         self.lock = threading.Lock()
@@ -25,6 +27,7 @@ class VehiclePathLiveAnimator:
         plt.ion()
         self.fig, self.ax = plt.subplots(figsize=(8, 6))
         self.line, = self.ax.plot([], [], 'b-o')
+        self.opt_line = None
         self.start_scatter = None
         self.end_scatter = None
 
@@ -56,12 +59,24 @@ class VehiclePathLiveAnimator:
 
             self.new_data_available = True
 
+    def set_optimized_poses(self, poses: list[np.ndarray]) -> None:
+        with self.lock:
+            self.optimized_poses = poses
+            self.optimized_positions = [p[:2, 2] for p in poses]
+            if self.opt_line is None:
+                self.opt_line, = self.ax.plot([], [], 'g--', label='Optimized')
+            self.new_data_available = True
+
     def _update_plot_loop(self):
         while self.running:
             if self.new_data_available:
                 with self.lock:
                     path = np.array(self.positions)
                     self.line.set_data(path[:, 0], path[:, 1])
+
+                    if self.optimized_positions is not None and self.opt_line is not None:
+                        opt = np.array(self.optimized_positions)
+                        self.opt_line.set_data(opt[:,0], opt[:,1])
 
                     margin = 1
                     self.ax.set_xlim(np.min(path[:, 0]) - margin, np.max(path[:, 0]) + margin)
