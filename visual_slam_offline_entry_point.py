@@ -76,11 +76,16 @@ def draw_pred_rect(frames: np.ndarray, results):
     draw_bbs(img, results, i)
 
 def compute_dynamic_mask(prev_img: np.ndarray, curr_img: np.ndarray, thresh: int = 25) -> np.ndarray:
-    diff = cv2.absdiff(prev_img, curr_img)
-    _, mask = cv2.threshold(diff, thresh, 255, cv2.THRESH_BINARY)
-    kernel = np.ones((5,5), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=1)
-    return mask > 0
+    """Simple absolute difference with a hand-written dilation step."""
+    diff = np.abs(prev_img.astype(np.int16) - curr_img.astype(np.int16))
+    mask = (diff >= thresh).astype(np.uint8)
+
+    k = 5
+    pad = k // 2
+    padded = np.pad(mask, pad)
+    windows = np.lib.stride_tricks.sliding_window_view(padded, (k, k))
+    dilated = windows.max(axis=(2, 3))
+    return dilated > 0
 
 def filter_keypoints(keypoints, descriptors, mask):
     if mask is None:
