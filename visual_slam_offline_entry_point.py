@@ -15,17 +15,26 @@ from homography import estimate_homography_from_orb
 from cam_intrinsics_estimation import make_K
 import logging
 
-logging.basicConfig(level=logging.DEBUG, format='%(levelname)s::cv2_e2e - %(message)s')
+
+def _init_logging(level: str) -> None:
+    """Initialise logging with the given level name."""
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(levelname)s::cv2_e2e - %(message)s",
+    )
+
 
 # SAMPLE_VIDEO_PATH = "4644521-uhd_2562_1440_30fps.mp4"
 SAMPLE_VIDEO_PATH = "sharp_curve.mp4"
 
+
 FeatureDetector_t = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
+
 
 def compute_moments(patch):
     h, w = patch.shape
     M00 = np.sum(patch)
-    
+
     if M00 == 0:
         return 0, 0, 0
 
@@ -39,20 +48,28 @@ def compute_moments(patch):
 
     return M00, cx, cy
 
-def orb_detect(img: np.ndarray, detector: FeatureDetector_t, top_significant_kp=1000) -> np.ndarray:
+
+def orb_detect(
+    img: np.ndarray, detector: FeatureDetector_t, top_significant_kp=1000
+) -> np.ndarray:
     keypoints, descriptors = detector(img)
     logging.debug(f"Number of keypoints found: {len(keypoints)}")
-    kp_response_sort_indices = np.argsort([-kp.response for kp in keypoints])[:top_significant_kp]
+    kp_response_sort_indices = np.argsort([-kp.response for kp in keypoints])[
+        :top_significant_kp
+    ]
     keypoints = [keypoints[i] for i in kp_response_sort_indices]
     descriptors = descriptors[kp_response_sort_indices]
     return keypoints, descriptors
+
 
 def compute_orientation(img, keypoint, patch_size=31):
     x, y = int(keypoint.pt[0]), int(keypoint.pt[1])
     radius = patch_size // 2
 
-    patch = img[max(y - radius, 0): y + radius + 1,
-                max(x - radius, 0): x + radius + 1]
+    patch = img[
+        max(y - radius, 0): y + radius + 1,
+        max(x - radius, 0): x + radius + 1,
+    ]
 
     if patch.shape[0] != patch_size or patch.shape[1] != patch_size:
         return 0.0  # not enough space around the point
@@ -66,16 +83,27 @@ def compute_orientation(img, keypoint, patch_size=31):
     angle = np.arctan2(dy, dx) * 180.0 / np.pi
     return angle
 
+
 def draw_bbs(img_draw: np.ndarray, results, i):
-  bboxes = results.xyxy[i][:, :4].cpu().numpy().astype(int)
-  for box in bboxes:
-      cv2.rectangle(img_draw, (box[0], box[1]), (box[2], box[3]), color=(255, 0, 0), thickness=1)
+    bboxes = results.xyxy[i][:, :4].cpu().numpy().astype(int)
+    for box in bboxes:
+        cv2.rectangle(
+            img_draw,
+            (box[0], box[1]),
+            (box[2], box[3]),
+            color=(255, 0, 0),
+            thickness=1,
+        )
+
 
 def draw_pred_rect(frames: np.ndarray, results):
-  for i, img in enumerate(frames):
-    draw_bbs(img, results, i)
+    for i, img in enumerate(frames):
+        draw_bbs(img, results, i)
 
-def compute_dynamic_mask(prev_img: np.ndarray, curr_img: np.ndarray, thresh: int = 25) -> np.ndarray:
+
+def compute_dynamic_mask(
+    prev_img: np.ndarray, curr_img: np.ndarray, thresh: int = 25
+) -> np.ndarray:
     """Simple absolute difference with a hand-written dilation step."""
     diff = np.abs(prev_img.astype(np.int16) - curr_img.astype(np.int16))
     mask = (diff >= thresh).astype(np.uint8)
@@ -86,6 +114,7 @@ def compute_dynamic_mask(prev_img: np.ndarray, curr_img: np.ndarray, thresh: int
     windows = np.lib.stride_tricks.sliding_window_view(padded, (k, k))
     dilated = windows.max(axis=(2, 3))
     return dilated > 0
+
 
 def filter_keypoints(keypoints, descriptors, mask):
     if mask is None:
@@ -100,7 +129,8 @@ def filter_keypoints(keypoints, descriptors, mask):
     if len(filtered_desc) == 0:
         return [], np.empty((0, descriptors.shape[1]), dtype=descriptors.dtype)
     return filtered_kp, np.vstack(filtered_desc)
-    
+
+
 def load_video_frames(path, resize=(1080, 1920), max_frames=50):
     cap = cv2.VideoCapture(path)
     count = 0
@@ -137,6 +167,23 @@ def main() -> None:
         help="Maximum number of frames to process",
     )
     parser.add_argument(
+        "--log_level",
+        default="DEBUG",
+        help="Logging level (DEBUG, INFO, WARNING)",
+    )
+    parser.add_argument(
+        "--sleep_time",
+        type=float,
+        default=0.1,
+        help="Delay between frames to simulate slow processing",
+    )
+    parser.add_argument(
+        "--pause_time",
+        type=float,
+        default=0.001,
+        help="Matplotlib pause duration",
+    )
+    parser.add_argument(
         "--semantic_masking",
         action="store_true",
         help="Mask dynamic regions before feature detection",
@@ -146,8 +193,14 @@ def main() -> None:
         help="Path to save the final trajectory plot",
         default=None,
     )
+    parser.add_argument(
+        "--save_poses",
+        help="Optional path to save estimated 2D poses (frame_index x y)",
+        default=None,
+    )
     args = parser.parse_args()
 
+    _init_logging(args.log_level)
     path_estimator = VehiclePathLiveAnimator()
     bow_db = BoWDatabase()
     pose_graph = PoseGraph()
@@ -156,7 +209,9 @@ def main() -> None:
     frame_id = 0
 
     # Process first frame
-    cv2_orb_detector: FeatureDetector_t = lambda img: cv2.ORB_create().detectAndCompute(img, None)
+    cv2_orb_detector: FeatureDetector_t = (
+        lambda img: cv2.ORB_create().detectAndCompute(img, None)
+    )
     prev_keypoints, prev_desc = orb_detect(prev_frame, cv2_orb_detector)
     bow_db.add_frame(frame_id, prev_desc)
     frames_data = {frame_id: (prev_frame, prev_keypoints, prev_desc)}
@@ -165,31 +220,55 @@ def main() -> None:
     for frame in frames:
         frame_id += 1
         curr_img, prev_img = frame, prev_frame
-        cv2_orb_detector: FeatureDetector_t = lambda img: cv2.ORB_create().detectAndCompute(img, None)
-        cv2_sift_detector: FeatureDetector_t = lambda img: cv2.SIFT_create().detectAndCompute(img, None)
-        # custom_orb_detector: FeatureDetector_t = lambda img: my_custom_orb(img)
+        cv2_orb_detector: FeatureDetector_t = (
+            lambda img: cv2.ORB_create().detectAndCompute(img, None)
+        )
+        # Alternative feature detector example using SIFT
+        # cv2_sift_detector: FeatureDetector_t = (
+        #     lambda img: cv2.SIFT_create().detectAndCompute(img, None)
+        # )
+        # custom_orb_detector: FeatureDetector_t = (
+        #     lambda img: my_custom_orb(img)
+        # )
         prev_keypoints, prev_desc = orb_detect(prev_img, cv2_orb_detector)
         curr_keypoints, curr_desc = orb_detect(curr_img, cv2_orb_detector)
-        mask = compute_dynamic_mask(prev_img, curr_img) if args.semantic_masking else None
-        prev_keypoints, prev_desc = filter_keypoints(prev_keypoints, prev_desc, mask)
-        curr_keypoints, curr_desc = filter_keypoints(curr_keypoints, curr_desc, mask)
+        mask = (
+            compute_dynamic_mask(prev_img, curr_img)
+            if args.semantic_masking
+            else None
+        )
+        prev_keypoints, prev_desc = filter_keypoints(
+            prev_keypoints,
+            prev_desc,
+            mask,
+        )
+        curr_keypoints, curr_desc = filter_keypoints(
+            curr_keypoints,
+            curr_desc,
+            mask,
+        )
         # frame_with_keypoints = cv2.drawKeypoints(
         #     gray_additional_frame, keypoints, None,
         #     flags=cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS
         # )
         K = make_K(curr_img.shape[1], curr_img.shape[0])  # estimate intrinsics
         try:
-            H, R, t = estimate_homography_from_orb(prev_keypoints, prev_desc,
-                                                  curr_keypoints, curr_desc, K)
+            H, R, t = estimate_homography_from_orb(
+                prev_keypoints, prev_desc, curr_keypoints, curr_desc, K
+            )
             logging.debug("Homography:\n%s", H)
         except Exception as exc:
             logging.warning("Homography estimation failed: %s", exc)
             prev_frame = curr_img
             continue
-        
 
-        
-        # H, R, t = estimate_homography_from_sift(prev_keypoints, prev_desc, curr_keypoints, curr_desc)
+        # Alternative homography estimation using SIFT
+        # H, R, t = estimate_homography_from_sift(
+        #     prev_keypoints,
+        #     prev_desc,
+        #     curr_keypoints,
+        #     curr_desc,
+        # )
         pose_graph.add_pose(R, t)
         path_estimator.add_transform(R, t)
 
@@ -198,14 +277,20 @@ def main() -> None:
         if loop_id is not None and loop_id in frames_data:
             loop_img, loop_kp, loop_desc = frames_data[loop_id]
             try:
-                _, R_loop, t_loop = estimate_homography_from_orb(loop_kp, loop_desc, curr_keypoints, curr_desc, K)
+                _, R_loop, t_loop = estimate_homography_from_orb(
+                    loop_kp,
+                    loop_desc,
+                    curr_keypoints,
+                    curr_desc,
+                    K,
+                )
                 pose_graph.add_loop(loop_id, frame_id, R_loop, t_loop)
                 path_estimator.add_loop_edge(loop_id, frame_id)
                 optimized = pose_graph.optimize()
                 path_estimator.set_optimized_poses(optimized)
-                orig = np.array([p[:2,2] for p in pose_graph.poses])
-                opt = np.array([p[:2,2] for p in optimized])
-                rmse = np.sqrt(np.mean((orig - opt)**2))
+                orig = np.array([p[:2, 2] for p in pose_graph.poses])
+                opt = np.array([p[:2, 2] for p in optimized])
+                rmse = np.sqrt(np.mean((orig - opt) ** 2))
                 logging.info("Pose graph optimised (RMSE=%.4f)", rmse)
             except Exception as exc:
                 logging.warning("Loop closure transform failed: %s", exc)
@@ -213,9 +298,14 @@ def main() -> None:
         bow_db.add_frame(frame_id, curr_desc)
         frames_data[frame_id] = (curr_img, curr_keypoints, curr_desc)
         prev_frame = curr_img
-        time.sleep(0.1)  # simulate results arriving slowly
-        plt.pause(0.001)  # <-- THIS IS CRITICAL!!!
+        time.sleep(args.sleep_time)
+        if args.pause_time > 0:
+            plt.pause(args.pause_time)
     path_estimator.stop(args.save_plot)
+
+    if args.save_poses:
+        poses = np.array(path_estimator.positions)
+        np.savetxt(args.save_poses, poses, fmt="%.6f")
 
     # plt.axis('off')
     # plt.gca().set_position([0, 0, 1, 1])  # Fill the entire figure
