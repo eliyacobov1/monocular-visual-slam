@@ -11,8 +11,8 @@ import os
 from slam_path_estimator import VehiclePathLiveAnimator
 from loop_closure import BoWDatabase
 from pose_graph import PoseGraph
-from homography import estimate_homography_from_orb
-from cam_intrinsics_estimation import make_K
+from homography import estimate_pose_from_orb, estimate_homography_from_orb
+from cam_intrinsics_estimation import make_K, load_K_from_file
 import logging
 
 
@@ -189,6 +189,11 @@ def main() -> None:
         help="Mask dynamic regions before feature detection",
     )
     parser.add_argument(
+        "--intrinsics_file",
+        help="Optional path to camera intrinsics (fx fy cx cy)",
+        default=None,
+    )
+    parser.add_argument(
         "--save_plot",
         help="Path to save the final trajectory plot",
         default=None,
@@ -206,6 +211,10 @@ def main() -> None:
     pose_graph = PoseGraph()
     frames = load_video_frames(args.video, max_frames=args.max_frames)
     prev_frame = next(frames)
+    if args.intrinsics_file:
+        K = load_K_from_file(args.intrinsics_file)
+    else:
+        K = make_K(prev_frame.shape[1], prev_frame.shape[0])
     frame_id = 0
 
     # Process first frame
@@ -251,16 +260,21 @@ def main() -> None:
         #     gray_additional_frame, keypoints, None,
         #     flags=cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS
         # )
-        K = make_K(curr_img.shape[1], curr_img.shape[0])  # estimate intrinsics
         try:
-            H, R, t = estimate_homography_from_orb(
+            R, t = estimate_pose_from_orb(
                 prev_keypoints, prev_desc, curr_keypoints, curr_desc, K
             )
-            logging.debug("Homography:\n%s", H)
+            logging.debug("Pose R=%s t=%s", R.tolist(), t.tolist())
         except Exception as exc:
-            logging.warning("Homography estimation failed: %s", exc)
-            prev_frame = curr_img
-            continue
+            logging.warning("Pose estimation failed: %s", exc)
+            try:
+                _, R, t = estimate_homography_from_orb(
+                    prev_keypoints, prev_desc, curr_keypoints, curr_desc, K
+                )
+                logging.debug("Fallback homography pose used")
+            except Exception:
+                prev_frame = curr_img
+                continue
 
         # Alternative homography estimation using SIFT
         # H, R, t = estimate_homography_from_sift(
@@ -277,13 +291,28 @@ def main() -> None:
         if loop_id is not None and loop_id in frames_data:
             loop_img, loop_kp, loop_desc = frames_data[loop_id]
             try:
-                _, R_loop, t_loop = estimate_homography_from_orb(
+                R_loop, t_loop = estimate_pose_from_orb(
                     loop_kp,
                     loop_desc,
                     curr_keypoints,
                     curr_desc,
                     K,
                 )
+            except Exception as exc:
+                logging.warning("Loop closure transform failed: %s", exc)
+                try:
+                    _, R_loop, t_loop = estimate_homography_from_orb(
+                        loop_kp,
+                        loop_desc,
+                        curr_keypoints,
+                        curr_desc,
+                        K,
+                    )
+                    logging.debug("Fallback homography for loop used")
+                except Exception as exc2:
+                    logging.warning("Fallback loop closure failed: %s", exc2)
+                    R_loop = t_loop = None
+            if R_loop is not None:
                 pose_graph.add_loop(loop_id, frame_id, R_loop, t_loop)
                 path_estimator.add_loop_edge(loop_id, frame_id)
                 optimized = pose_graph.optimize()
@@ -292,8 +321,6 @@ def main() -> None:
                 opt = np.array([p[:2, 2] for p in optimized])
                 rmse = np.sqrt(np.mean((orig - opt) ** 2))
                 logging.info("Pose graph optimised (RMSE=%.4f)", rmse)
-            except Exception as exc:
-                logging.warning("Loop closure transform failed: %s", exc)
 
         bow_db.add_frame(frame_id, curr_desc)
         frames_data[frame_id] = (curr_img, curr_keypoints, curr_desc)

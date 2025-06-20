@@ -5,13 +5,13 @@ estimating camera trajectories from a video sequence. The implementation is
 compact yet complete and features:
 
 * **Main entry point** – `visual_slam_offline_entry_point.py` extracts ORB
-  features, estimates motion using a RANSAC‑robust homography and visualises
+  features, estimates motion using a RANSAC‑robust essential matrix and visualises
   the trajectory with `VehiclePathLiveAnimator`.
 * **Pose‑graph optimisation** – the `pose_graph.py` module maintains a graph of
   camera poses and refines it when loops are detected.
 * **Loop closure detection** – `loop_closure.py` implements a simple BoW
   database for recognising previously seen locations.
-* Additional helpers for homography estimation and camera intrinsics.
+* Additional helpers for essential‑matrix estimation and camera intrinsics.
 
 ## Repository structure
 
@@ -20,7 +20,7 @@ The most relevant modules are:
 * `visual_slam_offline_entry_point.py` – main entry point running the pipeline
 * `pose_graph.py` – pose graph data structure and optimisation logic
 * `loop_closure.py` – simple BoW database for detecting revisited places
-* `homography.py` – feature-based homography estimation utilities
+* `homography.py` – feature-based geometry estimation utilities
 * `cam_intrinsics_estimation.py` – optional camera calibration helpers
 
 ## Running the pipeline
@@ -33,8 +33,8 @@ python visual_slam_offline_entry_point.py --video sharp_curve.mp4
 ```
 
 The script loads frames from the given video, detects ORB keypoints and
-estimates planar motion between successive images.  Each transform is appended
-to a pose graph and the current vehicle path is shown in a Matplotlib window.
+estimates camera motion between successive images using the essential matrix. Each transform is appended
+  to a pose graph and the current vehicle path is shown in a Matplotlib window.
 When the BoW database identifies a loop, the graph is optimised and the plot is
 updated with the refined trajectory.
 
@@ -43,6 +43,7 @@ Useful flags:
 * `--max_frames N` – limit the number of processed frames.
 * `--semantic_masking` – mask dynamic regions before feature detection using a
   simple frame‑difference algorithm.
+* `--intrinsics_file path` – load calibrated intrinsics (`fx fy cx cy`) from a text file.
 
 ## Benchmarking with the TUM RGB‑D dataset
 
@@ -59,6 +60,10 @@ another machine and extract it locally.
 
 The dataset provides RGB images and a `groundtruth.txt` file. Convert the image
 sequence into a video before running the pipeline:
+The repository already includes `tum_freiburg1_intrinsics.txt` with the official
+camera parameters for these sequences. Pass this file to
+`visual_slam_offline_entry_point.py` via `--intrinsics_file` so that pose
+estimation uses accurate calibration.
 
 ```bash
 ffmpeg -r 30 -i rgb/%04d.png tum_sequence.mp4
@@ -72,6 +77,7 @@ python visual_slam_offline_entry_point.py \
     --log_level INFO \
     --sleep_time 0 \
     --pause_time 0 \
+    --intrinsics_file tum_freiburg1_intrinsics.txt \
     --save_poses estimated.txt
 ```
 
@@ -86,20 +92,19 @@ Pose Error (RPE):
 python evaluate_trajectory.py --gt groundtruth.txt --est estimated.txt \
     --rpe_delta 5 \
     --cols 1,2 \
+    --est_cols 0,1 \
     --report metrics.txt
 ```
 The script prints several summary statistics for both metrics. When `--report`
-is given, the results are also written to the specified file. Running the
-pipeline on the first 100 frames of `freiburg1_xyz` yielded very large errors,
-confirming that this simple monocular approach struggles on the dataset:
+is given, the results are also written to the specified file. Using the new essential-matrix based estimator and calibrated intrinsics we re-ran the pipeline on the first 10 frames of `freiburg1_xyz`.  The errors remain high but are noticeably smaller:
 
 ```text
-ATE_RMSE 59335.6007
-ATE_MEAN 51310.0229
-ATE_MEDIAN 51453.2348
-RPE_RMSE 5489.5216
-RPE_MEAN 5489.1764
-RPE_MEDIAN 5498.2939
+ATE_RMSE 1973.9868
+ATE_MEAN 1685.4499
+ATE_MEDIAN 1691.5486
+RPE_RMSE 1675.9724
+RPE_MEAN 1675.9476
+RPE_MEDIAN 1677.1638
 ```
 
 ## Development
@@ -112,5 +117,5 @@ pytest -q
 ```
 
 The SLAM test synthesises a short translating clip and verifies the estimated
-homographies.
+camera translations.
 

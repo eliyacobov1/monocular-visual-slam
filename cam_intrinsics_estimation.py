@@ -81,6 +81,23 @@ def make_K(width, height, fov_x_deg=90):
                      [0, f, height/2],
                      [0, 0,        1 ]], dtype=np.float64)
 
+
+def load_K_from_file(path: str) -> np.ndarray:
+    """Parse ``fx fy cx cy`` from a text file and return the intrinsic matrix."""
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.replace(",", " ").split()
+            if len(parts) >= 4:
+                fx, fy, cx, cy = map(float, parts[:4])
+                K = np.array(
+                    [[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64
+                )
+                return K
+    raise ValueError(f"Could not parse intrinsics from {path}")
+
 # ======= EXAMPLE USAGE =======
 if __name__ == "__main__":
     # Simulated matched keypoints (should come from actual feature tracking)

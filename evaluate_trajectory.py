@@ -105,6 +105,11 @@ if __name__ == "__main__":
         help="Comma separated columns for x,y in both files",
     )
     parser.add_argument(
+        "--est_cols",
+        help="Optional columns for the estimated trajectory if different",
+        default=None,
+    )
+    parser.add_argument(
         "--rpe_delta", type=int, default=1, help="Frame distance for RPE"
     )
     parser.add_argument(
@@ -116,7 +121,8 @@ if __name__ == "__main__":
 
     col_idx = [int(c) for c in args.cols.split(",")]
     gt = load_traj(args.gt, col_idx)
-    est = load_traj(args.est, col_idx)
+    est_cols = col_idx if args.est_cols is None else [int(c) for c in args.est_cols.split(",")]
+    est = load_traj(args.est, est_cols)
 
     metrics = compute_additional_metrics(gt, est, delta=args.rpe_delta)
 
