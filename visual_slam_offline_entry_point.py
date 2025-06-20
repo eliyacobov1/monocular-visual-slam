@@ -10,8 +10,30 @@ import os
 
 from slam_path_estimator import VehiclePathLiveAnimator
 from loop_closure import BoWDatabase
-from pose_graph import PoseGraph
+from pose_graph import PoseGraph3D
 from homography import estimate_pose_from_orb, estimate_homography_from_orb
+
+
+def estimate_pose_optical_flow(prev_img: np.ndarray, curr_img: np.ndarray,
+                               prev_kp: list[cv2.KeyPoint], K: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate relative pose via PnP using tracked keypoints."""
+    if len(prev_kp) < 8:
+        raise RuntimeError("too few keypoints for optical flow")
+
+    prev_pts = np.float32([k.pt for k in prev_kp]).reshape(-1, 1, 2)
+    curr_pts, st, _ = cv2.calcOpticalFlowPyrLK(prev_img, curr_img, prev_pts, None)
+    st = st.reshape(-1)
+    good_prev = prev_pts[st == 1].reshape(-1, 2)
+    good_curr = curr_pts[st == 1].reshape(-1, 2)
+
+    if len(good_prev) < 8:
+        raise RuntimeError("optical flow tracking failed")
+
+    E, mask = cv2.findEssentialMat(good_prev, good_curr, K, method=cv2.RANSAC, threshold=1.0)
+    if E is None:
+        raise RuntimeError("findEssentialMat failed")
+    _, R, t, _ = cv2.recoverPose(E, good_prev, good_curr, K, mask=mask)
+    return R, t.ravel()
 from cam_intrinsics_estimation import make_K, load_K_from_file
 import logging
 
@@ -208,7 +230,7 @@ def main() -> None:
     _init_logging(args.log_level)
     path_estimator = VehiclePathLiveAnimator()
     bow_db = BoWDatabase()
-    pose_graph = PoseGraph()
+    pose_graph = PoseGraph3D()
     frames = load_video_frames(args.video, max_frames=args.max_frames)
     prev_frame = next(frames)
     if args.intrinsics_file:
@@ -224,7 +246,7 @@ def main() -> None:
     prev_keypoints, prev_desc = orb_detect(prev_frame, cv2_orb_detector)
     bow_db.add_frame(frame_id, prev_desc)
     frames_data = {frame_id: (prev_frame, prev_keypoints, prev_desc)}
-    pose_graph.add_pose(np.eye(2), np.zeros(2))  # initial pose
+    pose_graph.add_pose(np.eye(3), np.zeros(3))  # initial pose
 
     for frame in frames:
         frame_id += 1
@@ -239,14 +261,13 @@ def main() -> None:
         # custom_orb_detector: FeatureDetector_t = (
         #     lambda img: my_custom_orb(img)
         # )
-        prev_keypoints, prev_desc = orb_detect(prev_img, cv2_orb_detector)
         curr_keypoints, curr_desc = orb_detect(curr_img, cv2_orb_detector)
         mask = (
             compute_dynamic_mask(prev_img, curr_img)
             if args.semantic_masking
             else None
         )
-        prev_keypoints, prev_desc = filter_keypoints(
+        prev_keypoints_filt, prev_desc_filt = filter_keypoints(
             prev_keypoints,
             prev_desc,
             mask,
@@ -261,20 +282,35 @@ def main() -> None:
         #     flags=cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS
         # )
         try:
-            R, t = estimate_pose_from_orb(
-                prev_keypoints, prev_desc, curr_keypoints, curr_desc, K
-            )
+            R, t = estimate_pose_optical_flow(prev_img, curr_img, prev_keypoints_filt, K)
             logging.debug("Pose R=%s t=%s", R.tolist(), t.tolist())
         except Exception as exc:
-            logging.warning("Pose estimation failed: %s", exc)
+            logging.warning("Optical flow pose failed: %s", exc)
             try:
-                _, R, t = estimate_homography_from_orb(
-                    prev_keypoints, prev_desc, curr_keypoints, curr_desc, K
+                R, t = estimate_pose_from_orb(
+                    prev_keypoints_filt,
+                    prev_desc_filt,
+                    curr_keypoints,
+                    curr_desc,
+                    K,
                 )
-                logging.debug("Fallback homography pose used")
-            except Exception:
-                prev_frame = curr_img
-                continue
+                logging.debug("Fallback ORB pose used")
+            except Exception as exc2:
+                logging.warning("Pose estimation failed: %s", exc2)
+                try:
+                    _, R, t = estimate_homography_from_orb(
+                        prev_keypoints_filt,
+                        prev_desc_filt,
+                        curr_keypoints,
+                        curr_desc,
+                        K,
+                    )
+                    logging.debug("Fallback homography pose used")
+                except Exception:
+                    prev_frame = curr_img
+                    prev_keypoints = curr_keypoints
+                    prev_desc = curr_desc
+                    continue
 
         # Alternative homography estimation using SIFT
         # H, R, t = estimate_homography_from_sift(
@@ -325,6 +361,8 @@ def main() -> None:
         bow_db.add_frame(frame_id, curr_desc)
         frames_data[frame_id] = (curr_img, curr_keypoints, curr_desc)
         prev_frame = curr_img
+        prev_keypoints = curr_keypoints
+        prev_desc = curr_desc
         time.sleep(args.sleep_time)
         if args.pause_time > 0:
             plt.pause(args.pause_time)
