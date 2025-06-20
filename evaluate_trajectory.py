@@ -29,6 +29,28 @@ def load_traj(path: str, cols: Sequence[int] = (0, 1)) -> np.ndarray:
     return np.array(data, dtype=float)
 
 
+def align_similarity(src: np.ndarray, dst: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Return similarity-transform parameters aligning ``src`` to ``dst``."""
+    mu_src = src.mean(axis=0)
+    mu_dst = dst.mean(axis=0)
+
+    src_c = src - mu_src
+    dst_c = dst - mu_dst
+    cov = dst_c.T @ src_c / len(src)
+
+    U, S, Vt = np.linalg.svd(cov)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        Vt[-1] *= -1
+        R = U @ Vt
+
+    var_src = (src_c ** 2).sum() / len(src)
+    scale = np.trace(np.diag(S)) / var_src
+
+    t = mu_dst - scale * (R @ mu_src)
+    return R, t, float(scale)
+
+
 def compute_ate(gt: np.ndarray, est: np.ndarray) -> float:
     """Return root mean square Absolute Trajectory Error."""
     if len(gt) == 0 or len(est) == 0:
@@ -36,17 +58,20 @@ def compute_ate(gt: np.ndarray, est: np.ndarray) -> float:
     min_len = min(len(gt), len(est))
     gt = gt[:min_len]
     est = est[:min_len]
-    offset = est[0] - gt[0]
-    return float(np.sqrt(np.mean(np.sum((gt - est + offset) ** 2, axis=1))))
+    R, t, s = align_similarity(est, gt)
+    est_aligned = (s * (R @ est.T)).T + t
+    return float(np.sqrt(np.mean(np.sum((gt - est_aligned) ** 2, axis=1))))
 
 
 def compute_rpe(gt: np.ndarray, est: np.ndarray, delta: int = 1) -> float:
     """Return root mean square Relative Pose Error."""
     min_len = min(len(gt), len(est)) - delta
+    R, t, s = align_similarity(est[: min_len + delta], gt[: min_len + delta])
+    est_aligned = (s * (R @ est.T)).T + t
     errors: list[float] = []
     for i in range(min_len):
         gt_rel = gt[i + delta] - gt[i]
-        est_rel = est[i + delta] - est[i]
+        est_rel = est_aligned[i + delta] - est_aligned[i]
         errors.append(np.linalg.norm(gt_rel - est_rel))
     return float(np.sqrt(np.mean(np.square(errors))))
 
@@ -61,9 +86,9 @@ def compute_additional_metrics(
     min_len = min(len(gt), len(est))
     gt = gt[:min_len]
     est = est[:min_len]
-    offset = est[0] - gt[0]
-    aligned = gt - offset
-    diff = aligned - est
+    R, t, s = align_similarity(est, gt)
+    est_aligned = (s * (R @ est.T)).T + t
+    diff = gt - est_aligned
     dists = np.linalg.norm(diff, axis=1)
     ate_rmse = float(np.sqrt(np.mean(dists ** 2)))
     ate_mean = float(np.mean(dists))
@@ -72,7 +97,7 @@ def compute_additional_metrics(
     rpe_errors = []
     for i in range(min_len - delta):
         gt_rel = gt[i + delta] - gt[i]
-        est_rel = est[i + delta] - est[i]
+        est_rel = est_aligned[i + delta] - est_aligned[i]
         rpe_errors.append(np.linalg.norm(gt_rel - est_rel))
     rpe_errors = np.array(rpe_errors)
     rpe_rmse = float(np.sqrt(np.mean(rpe_errors ** 2)))

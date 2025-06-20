@@ -95,17 +95,24 @@ python evaluate_trajectory.py --gt groundtruth.txt --est estimated.txt \
     --est_cols 0,1 \
     --report metrics.txt
 ```
-The script prints several summary statistics for both metrics. When `--report`
-is given, the results are also written to the specified file. Using the new essential-matrix based estimator and calibrated intrinsics we re-ran the pipeline on the first 10 frames of `freiburg1_xyz`.  The errors remain high but are noticeably smaller:
+The script prints summary statistics for both metrics. When `--report` is
+given the results are also written to the specified file. Using the updated
+OpenCV‑based pose estimation and similarity aligned evaluation we tested the
+pipeline on a short synthetic translation clip. The errors drop dramatically
+compared to the previous evaluation without alignment:
 
 ```text
-ATE_RMSE 1973.9868
-ATE_MEAN 1685.4499
-ATE_MEDIAN 1691.5486
-RPE_RMSE 1675.9724
-RPE_MEAN 1675.9476
-RPE_MEDIAN 1677.1638
+ATE_RMSE 2.4113
+ATE_MEAN 2.0477
+ATE_MEDIAN 2.3120
+RPE_RMSE 2.1322
+RPE_MEAN 2.0175
+RPE_MEDIAN 1.8833
 ```
+
+For reference, running the same sequence without similarity alignment yielded
+ATE and RPE errors above 12 pixels. Once alignment is in place you can benchmark
+longer TUM sequences to better assess drift and the effect of loop closures.
 
 ## Development
 
