@@ -45,6 +45,24 @@ Useful flags:
   simple frame‑difference algorithm.
 * `--intrinsics_file path` – load calibrated intrinsics (`fx fy cx cy`) from a text file.
 
+## Interactive viewer
+
+The `slam_viewer.py` script provides a side-by-side interface that plays the input video while plotting the estimated trajectory. Matched feature points and basic pose diagnostics are drawn on top of each frame.
+
+
+Launch the viewer with:
+```bash
+python slam_viewer.py --video sharp_curve.mp4
+```
+
+Useful options:
+
+* `--step` – advance frames one-by-one.
+* `--show3d` – toggle a 3-D scatter of the path.
+* `--intrinsics_file` – supply camera intrinsics (`fx fy cx cy`).
+
+The viewer requires `opencv-python` and `matplotlib`.
+
 ## Benchmarking with the TUM RGB‑D dataset
 
 Download one of the TUM RGB‑D sequences from the official website or its
