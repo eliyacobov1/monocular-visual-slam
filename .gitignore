@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.pyo
+NVidiaRun2.mp4
+pytest_cache/

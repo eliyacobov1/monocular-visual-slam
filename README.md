@@ -25,11 +25,11 @@ The most relevant modules are:
 
 ## Running the pipeline
 
-The repository ships with a short example clip `sharp_curve.mp4`.  Use the
+The demos download a short example clip on first use.  Use the
 entry‑point script to process the video and display the recovered trajectory:
 
 ```bash
-python visual_slam_offline_entry_point.py --video sharp_curve.mp4
+python visual_slam_offline_entry_point.py
 ```
 
 The script loads frames from the given video, detects ORB keypoints and
@@ -52,7 +52,7 @@ The `slam_viewer.py` script provides a side-by-side interface that plays the inp
 
 Launch the viewer with:
 ```bash
-python slam_viewer.py --video sharp_curve.mp4
+python slam_viewer.py
 ```
 
 Useful options:

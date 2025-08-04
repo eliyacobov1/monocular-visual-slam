@@ -7,11 +7,13 @@ from typing import Callable
 import matplotlib.pyplot as plt
 import argparse
 import os
+from pathlib import Path
 
 from slam_path_estimator import VehiclePathLiveAnimator
 from loop_closure import BoWDatabase
 from pose_graph import PoseGraph3D
 from homography import estimate_pose_from_orb, estimate_homography_from_orb
+from demo_utils import ensure_sample_video, DEFAULT_VIDEO_PATH
 
 
 def estimate_pose_optical_flow(prev_img: np.ndarray, curr_img: np.ndarray,
@@ -47,7 +49,12 @@ def _init_logging(level: str) -> None:
 
 
 # SAMPLE_VIDEO_PATH = "4644521-uhd_2562_1440_30fps.mp4"
-SAMPLE_VIDEO_PATH = "sharp_curve.mp4"
+# The repository previously relied on a small clip checked into source
+# control.  Instead we share the test video used in ``tests/test_real_video``
+# so that the demo matches the automated tests and does not depend on large
+# binary blobs.  The helper in :mod:`demo_utils` downloads the clip on demand
+# if it is missing.
+SAMPLE_VIDEO_PATH = str(DEFAULT_VIDEO_PATH)
 
 
 FeatureDetector_t = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
@@ -228,10 +235,22 @@ def main() -> None:
     args = parser.parse_args()
 
     _init_logging(args.log_level)
+
+    # Ensure the input video exists.  When the user does not provide a video
+    # path we fall back to the sample clip used in tests and download it on
+    # demand.  This provides a better out-of-the-box experience while still
+    # allowing custom videos to be supplied.
+    video_path = Path(args.video)
+    if not video_path.exists():
+        if args.video == SAMPLE_VIDEO_PATH:
+            video_path = ensure_sample_video(video_path)
+        else:
+            raise SystemExit(f"Could not find video file {video_path}")
+
     path_estimator = VehiclePathLiveAnimator()
     bow_db = BoWDatabase()
     pose_graph = PoseGraph3D()
-    frames = load_video_frames(args.video, max_frames=args.max_frames)
+    frames = load_video_frames(str(video_path), max_frames=args.max_frames)
     prev_frame = next(frames)
     if args.intrinsics_file:
         K = load_K_from_file(args.intrinsics_file)
