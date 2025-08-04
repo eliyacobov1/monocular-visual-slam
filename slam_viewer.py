@@ -19,7 +19,9 @@ import math
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from cam_intrinsics_estimation import make_K, load_K_from_file
+from demo_utils import ensure_sample_video, DEFAULT_VIDEO_PATH
 
 
 # ------------------------------- helpers -----------------------------------
@@ -43,7 +45,11 @@ def rotation_to_euler_xyz(R: np.ndarray) -> tuple[float, float, float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Side‑by‑side SLAM viewer")
-    parser.add_argument("--video", required=True, help="Path to input video")
+    parser.add_argument(
+        "--video",
+        default=str(DEFAULT_VIDEO_PATH),
+        help="Path to input video (defaults to sample clip)",
+    )
     parser.add_argument(
         "--intrinsics_file", help="Optional intrinsics file with fx fy cx cy"
     )
@@ -55,9 +61,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    cap = cv2.VideoCapture(args.video)
+    video_path = Path(args.video)
+    if not video_path.exists():
+        if args.video == str(DEFAULT_VIDEO_PATH):
+            video_path = ensure_sample_video(video_path)
+        else:
+            raise SystemExit(f"Could not find video {video_path}")
+
+    cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        raise SystemExit(f"Could not open video {args.video}")
+        raise SystemExit(f"Could not open video {video_path}")
 
     ok, first_frame = cap.read()
     if not ok:
@@ -122,17 +135,24 @@ def main() -> None:
         inlier_mask = None
         inlier_ratio = 0.0
         if len(matches) >= 8:
-            E, inlier_mask = cv2.findEssentialMat(
-                pts_prev, pts_curr, K, method=cv2.RANSAC, threshold=1.0
-            )
-            if E is not None:
-                _, R, t, inlier_mask = cv2.recoverPose(
-                    E, pts_prev, pts_curr, K, mask=inlier_mask
+            try:
+                E, inlier_mask = cv2.findEssentialMat(
+                    pts_prev, pts_curr, K, method=cv2.RANSAC, threshold=1.0
                 )
-                inlier_mask = inlier_mask.ravel().astype(bool)
-                inlier_ratio = float(inlier_mask.sum()) / len(matches)
-            else:
+                if E is not None:
+                    _, R, t, inlier_mask = cv2.recoverPose(
+                        E, pts_prev, pts_curr, K, mask=inlier_mask
+                    )
+                    inlier_mask = inlier_mask.ravel().astype(bool)
+                    inlier_ratio = float(inlier_mask.sum()) / len(matches)
+                else:
+                    inlier_mask = np.zeros(len(matches), dtype=bool)
+            except cv2.error:
+                # Bad geometry input; fall back to identity transform so the
+                # viewer can continue running without crashing.
                 inlier_mask = np.zeros(len(matches), dtype=bool)
+                R = np.eye(3)
+                t = np.zeros((3, 1))
         else:
             inlier_mask = np.zeros(len(matches), dtype=bool)
 
