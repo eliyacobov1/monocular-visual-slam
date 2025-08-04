@@ -8,6 +8,7 @@ import time
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.axes import Axes
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,18 @@ logger = logging.getLogger(__name__)
 class VehiclePathLiveAnimator:
     """Maintain and plot the estimated vehicle trajectory."""
 
-    def __init__(self) -> None:
+    def __init__(self, ax: Axes | None = None) -> None:
+        """Create a live trajectory animator.
+
+        Parameters
+        ----------
+        ax:
+            Optional Matplotlib axis to draw on.  When ``None`` a new figure
+            and axis are created automatically.  Supplying an existing axis
+            allows the trajectory plot to live alongside other visualisations
+            such as the input video stream.
+        """
+
         self.poses: list[np.ndarray] = [np.eye(3)]
         self.optimized_poses: list[np.ndarray] | None = None
         self.positions: list[np.ndarray] = [np.array([0.0, 0.0])]
@@ -26,9 +38,15 @@ class VehiclePathLiveAnimator:
         self.running = True
         self.lock = threading.Lock()
 
-        # Setup plot
+        # Setup plot.  If no axis is supplied we create our own figure,
+        # otherwise we piggy back on the provided one so the caller can layout
+        # multiple visualisations in a single window.
         plt.ion()
-        self.fig, self.ax = plt.subplots(figsize=(8, 6))
+        if ax is None:
+            self.fig, self.ax = plt.subplots(figsize=(8, 6))
+        else:
+            self.ax = ax
+            self.fig = ax.figure
         self.line, = self.ax.plot([], [], "b-o", label="Estimate")
         self.opt_line = None
         self.start_scatter = None
