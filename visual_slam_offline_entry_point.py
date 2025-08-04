@@ -161,6 +161,15 @@ def filter_keypoints(keypoints, descriptors, mask):
 
 
 def load_video_frames(path, resize=(1080, 1920), max_frames=50):
+    """Yield RGB frames from ``path`` resized for processing.
+
+    The previous implementation returned only grayscale images which meant the
+    demo could not easily display the video alongside the trajectory plot.  We
+    now provide the colour frames so callers can both run the SLAM pipeline and
+    visualise the input at the same time.  Consumers can convert the frames to
+    grayscale when required.
+    """
+
     cap = cv2.VideoCapture(path)
     count = 0
 
@@ -170,16 +179,10 @@ def load_video_frames(path, resize=(1080, 1920), max_frames=50):
             break
         frame = cv2.resize(frame, resize)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        grayscale_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         count += 1
-        yield grayscale_frame
-        # frames.append(frame)
-    # cap.release()
+        yield frame
 
-    # frames_np = np.stack(frames, axis=0)  # Shape: (T, H, W, C)
-    # # frames_np = np.transpose(frames_np, (0, 3, 1, 2))  # (T, C, H, W)
-    # # frames_tensor = frames_np / 255.0  # Normalize to [0,1]
-    # return frames_np
+    cap.release()
 
 
 def main() -> None:
@@ -247,11 +250,22 @@ def main() -> None:
         else:
             raise SystemExit(f"Could not find video file {video_path}")
 
-    path_estimator = VehiclePathLiveAnimator()
+    # Create a window with the video on the left and the trajectory on the right
+    fig, (ax_img, ax_traj) = plt.subplots(1, 2, figsize=(12, 6))
+    ax_img.set_title("Video")
+    ax_img.axis("off")
+    fig.tight_layout()
+    path_estimator = VehiclePathLiveAnimator(ax=ax_traj)
+
     bow_db = BoWDatabase()
     pose_graph = PoseGraph3D()
     frames = load_video_frames(str(video_path), max_frames=args.max_frames)
-    prev_frame = next(frames)
+
+    # Read the first frame and initialise feature detection
+    prev_color = next(frames)
+    prev_frame = cv2.cvtColor(prev_color, cv2.COLOR_RGB2GRAY)
+    img_artist = ax_img.imshow(prev_color)
+
     if args.intrinsics_file:
         K = load_K_from_file(args.intrinsics_file)
     else:
@@ -267,9 +281,11 @@ def main() -> None:
     frames_data = {frame_id: (prev_frame, prev_keypoints, prev_desc)}
     pose_graph.add_pose(np.eye(3), np.zeros(3))  # initial pose
 
-    for frame in frames:
+    for color_frame in frames:
         frame_id += 1
-        curr_img, prev_img = frame, prev_frame
+        curr_color = color_frame
+        curr_img = cv2.cvtColor(curr_color, cv2.COLOR_RGB2GRAY)
+        prev_img = prev_frame
         cv2_orb_detector: FeatureDetector_t = (
             lambda img: cv2.ORB_create().detectAndCompute(img, None)
         )
@@ -300,6 +316,10 @@ def main() -> None:
         #     gray_additional_frame, keypoints, None,
         #     flags=cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS
         # )
+        # update displayed video frame before triggering a redraw via
+        # ``add_transform``
+        img_artist.set_data(curr_color)
+
         try:
             R, t = estimate_pose_optical_flow(prev_img, curr_img, prev_keypoints_filt, K)
             logging.debug("Pose R=%s t=%s", R.tolist(), t.tolist())
