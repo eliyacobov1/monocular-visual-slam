@@ -116,31 +116,4 @@ python evaluate_trajectory.py --gt groundtruth.txt --est estimated.txt \
 The script prints summary statistics for both metrics. When `--report` is
 given the results are also written to the specified file. Using the updated
 OpenCV‑based pose estimation and similarity aligned evaluation we tested the
-pipeline on a short synthetic translation clip. The errors drop dramatically
-compared to the previous evaluation without alignment:
-
-```text
-ATE_RMSE 2.4113
-ATE_MEAN 2.0477
-ATE_MEDIAN 2.3120
-RPE_RMSE 2.1322
-RPE_MEAN 2.0175
-RPE_MEDIAN 1.8833
-```
-
-For reference, running the same sequence without similarity alignment yielded
-ATE and RPE errors above 12 pixels. Once alignment is in place you can benchmark
-longer TUM sequences to better assess drift and the effect of loop closures.
-
-## Development
-
-Tests require Python 3.11+ with `numpy`, `opencv‑python‑headless`,
-`matplotlib`, `scikit‑learn` and `pytest` installed.  Run them with:
-
-```bash
-pytest -q
-```
-
-The SLAM test synthesises a short translating clip and verifies the estimated
-camera translations.
-
+pipeline on a short synthetic translation clip.

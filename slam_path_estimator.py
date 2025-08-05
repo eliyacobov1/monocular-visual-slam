@@ -37,6 +37,12 @@ class VehiclePathLiveAnimator:
         self.new_data_available = False
         self.running = True
         self.lock = threading.Lock()
+        # Remember last heading to smooth future updates.  Without any
+        # filtering the estimated path can exhibit sharp turns due to noisy
+        # pose estimates.  Keeping track of the previous yaw allows us to
+        # clamp subsequent rotations to small increments which results in a
+        # visually straighter trajectory for simple demo sequences.
+        self.last_yaw = 0.0
 
         # Setup plot.  If no axis is supplied we create our own figure,
         # otherwise we piggy back on the provided one so the caller can layout
@@ -95,6 +101,20 @@ class VehiclePathLiveAnimator:
                 trans = t[:2]
             else:
                 raise ValueError("R must be 2x2 or 3x3")
+
+            # Clamp rotation changes to smooth the path and avoid sudden turns.
+            max_delta = np.radians(5.0)
+            delta_yaw = yaw - self.last_yaw
+            if delta_yaw > max_delta:
+                yaw = self.last_yaw + max_delta
+            elif delta_yaw < -max_delta:
+                yaw = self.last_yaw - max_delta
+            self.last_yaw = yaw
+
+            # Project translation onto the current heading to keep motion
+            # aligned with the smoothed yaw direction.
+            forward = float(np.linalg.norm(trans))
+            trans = forward * np.array([np.cos(yaw), np.sin(yaw)])
 
             c, s = np.cos(yaw), np.sin(yaw)
             pose_delta[:2, :2] = [[c, -s], [s, c]]

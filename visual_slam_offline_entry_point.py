@@ -250,21 +250,18 @@ def main() -> None:
         else:
             raise SystemExit(f"Could not find video file {video_path}")
 
-    # Create a window with the video on the left and the trajectory on the right
-    fig, (ax_img, ax_traj) = plt.subplots(1, 2, figsize=(12, 6))
-    ax_img.set_title("Video")
-    ax_img.axis("off")
-    fig.tight_layout()
-    path_estimator = VehiclePathLiveAnimator(ax=ax_traj)
+    # Only display the estimated trajectory.  The previous demo showed the
+    # input video alongside the path which cluttered the visualisation and was
+    # unnecessary for basic inspection.  By letting ``VehiclePathLiveAnimator``
+    # create its own figure we focus solely on the recovered camera motion.
+    path_estimator = VehiclePathLiveAnimator()
 
     bow_db = BoWDatabase()
     pose_graph = PoseGraph3D()
     frames = load_video_frames(str(video_path), max_frames=args.max_frames)
 
     # Read the first frame and initialise feature detection
-    prev_color = next(frames)
-    prev_frame = cv2.cvtColor(prev_color, cv2.COLOR_RGB2GRAY)
-    img_artist = ax_img.imshow(prev_color)
+    prev_frame = cv2.cvtColor(next(frames), cv2.COLOR_RGB2GRAY)
 
     if args.intrinsics_file:
         K = load_K_from_file(args.intrinsics_file)
@@ -283,8 +280,7 @@ def main() -> None:
 
     for color_frame in frames:
         frame_id += 1
-        curr_color = color_frame
-        curr_img = cv2.cvtColor(curr_color, cv2.COLOR_RGB2GRAY)
+        curr_img = cv2.cvtColor(color_frame, cv2.COLOR_RGB2GRAY)
         prev_img = prev_frame
         cv2_orb_detector: FeatureDetector_t = (
             lambda img: cv2.ORB_create().detectAndCompute(img, None)
@@ -316,10 +312,6 @@ def main() -> None:
         #     gray_additional_frame, keypoints, None,
         #     flags=cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS
         # )
-        # update displayed video frame before triggering a redraw via
-        # ``add_transform``
-        img_artist.set_data(curr_color)
-
         try:
             R, t = estimate_pose_optical_flow(prev_img, curr_img, prev_keypoints_filt, K)
             logging.debug("Pose R=%s t=%s", R.tolist(), t.tolist())
