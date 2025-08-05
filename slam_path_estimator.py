@@ -68,10 +68,37 @@ class VehiclePathLiveAnimator:
         """Append a relative pose to the path."""
         logger.debug("Adding transform R=%s t=%s", R.tolist(), t.tolist())
 
+        # Occasionally the upstream pose estimation returns NaNs which would
+        # propagate through the trajectory matrix multiplication and trigger
+        # ``RuntimeWarning: invalid value encountered in matmul``.  Guard
+        # against such cases by skipping non‑finite transforms.
+        if not (np.isfinite(R).all() and np.isfinite(t).all()):
+            logger.warning("Ignoring non-finite transform R=%s t=%s", R, t)
+            return
+
+        # The pose estimators operate in the camera coordinate system where
+        # the forward direction is the Z axis.  The 2‑D visualisation, however,
+        # uses an X/Y ground plane.  Incorporate forward motion by mapping the
+        # camera's X/Z translation onto this plane and derive the planar yaw
+        # rotation so that straight motion remains straight in the plot.
         with self.lock:
             pose_delta = np.eye(3)
-            pose_delta[:2, :2] = R[:2, :2]
-            pose_delta[:2, 2] = t[:2]
+
+            R = np.asarray(R)
+            t = np.asarray(t)
+            if R.shape == (3, 3):
+                yaw = float(np.arctan2(R[2, 0], R[0, 0]))
+                trans = t[[0, 2]]
+            elif R.shape == (2, 2):
+                # Already a planar rotation – treat it directly.
+                yaw = float(np.arctan2(R[1, 0], R[0, 0]))
+                trans = t[:2]
+            else:
+                raise ValueError("R must be 2x2 or 3x3")
+
+            c, s = np.cos(yaw), np.sin(yaw)
+            pose_delta[:2, :2] = [[c, -s], [s, c]]
+            pose_delta[:2, 2] = trans
 
             last_pose = self.poses[-1]
             new_pose = last_pose @ pose_delta
