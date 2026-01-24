@@ -118,6 +118,28 @@ given the results are also written to the specified file. Using the updated
 OpenCV‑based pose estimation and similarity aligned evaluation we tested the
 pipeline on a short synthetic translation clip.
 
+## Configuration-driven evaluation harness
+
+To make metrics reproducible across runs, the repository now includes a
+configuration-driven evaluation harness that emits per-sequence JSON/CSV
+artifacts plus an aggregated summary. Use the JSON configs under
+`configs/evaluation/` as starting points.
+
+For KITTI odometry:
+
+```bash
+python evaluation_harness.py --config configs/evaluation/kitti_odometry.json
+```
+
+For TUM RGB-D sequences:
+
+```bash
+python evaluation_harness.py --config configs/evaluation/tum_freiburg1.json
+```
+
+Each run writes `summary.json`/`summary.csv` and per-sequence reports under the
+configured `output_dir`, along with a plain-text metrics file for quick review.
+
 ## KITTI odometry sequences
 
 For KITTI odometry, place the dataset under a root directory (either the
