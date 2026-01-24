@@ -1,14 +1,17 @@
 #!/usr/bin/env python3.12
 
-import cv2
-import time
-import numpy as np
-from typing import Callable
-import matplotlib.pyplot as plt
 import argparse
+import logging
 import os
+import time
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
+from typing import Callable, Iterable
+
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
 
 from slam_path_estimator import VehiclePathLiveAnimator
 from loop_closure import BoWDatabase
@@ -16,6 +19,7 @@ from pose_graph import PoseGraph3D
 from homography import estimate_pose_from_orb, estimate_homography_from_orb
 from demo_utils import ensure_sample_video, DEFAULT_VIDEO_PATH
 from evaluate_trajectory import compute_additional_metrics
+from cam_intrinsics_estimation import make_K, load_K_from_file
 
 
 def estimate_pose_optical_flow(prev_img: np.ndarray, curr_img: np.ndarray,
@@ -38,8 +42,6 @@ def estimate_pose_optical_flow(prev_img: np.ndarray, curr_img: np.ndarray,
         raise RuntimeError("findEssentialMat failed")
     _, R, t, _ = cv2.recoverPose(E, good_prev, good_curr, K, mask=mask)
     return R, t.ravel()
-from cam_intrinsics_estimation import make_K, load_K_from_file
-import logging
 
 
 def _init_logging(level: str) -> None:
@@ -188,6 +190,39 @@ def load_video_frames(path, resize=(1080, 1920), max_frames=50):
 
 
 @dataclass(frozen=True)
+class SLAMRunConfig:
+    max_frames: int = 10000
+    sleep_time: float = 0.1
+    pause_time: float = 0.001
+    semantic_masking: bool = False
+    intrinsics_file: Path | None = None
+    save_plot: Path | None = None
+    save_poses: Path | None = None
+
+
+@dataclass(frozen=True)
+class SLAMInput:
+    frames: Iterable[np.ndarray]
+    intrinsics: np.ndarray
+    kitti_gt_positions: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class SLAMResult:
+    positions: np.ndarray
+    metrics: dict[str, float] | None = None
+
+
+@dataclass(frozen=True)
+class KittiConfig:
+    base_dir: Path
+    date: str
+    drive: str
+    camera: str = "image_02"
+    report_path: Path | None = None
+
+
+@dataclass(frozen=True)
 class KittiRawSession:
     base_dir: Path
     date: str
@@ -297,6 +332,215 @@ def load_kitti_frames(
         yield frame
 
 
+def build_kitti_session(config: KittiConfig) -> KittiRawSession:
+    drive_id = _normalize_drive_id(config.drive)
+    return KittiRawSession(
+        base_dir=config.base_dir,
+        date=config.date,
+        drive=drive_id,
+        camera=config.camera,
+    )
+
+
+def prepare_kitti_input(config: KittiConfig, run_config: SLAMRunConfig) -> SLAMInput:
+    """Prepare KITTI frames and metadata for a SLAM run."""
+    session = build_kitti_session(config)
+    image_paths = load_kitti_image_paths(session)
+    gt_positions = load_kitti_oxts_positions(session)
+    if run_config.intrinsics_file:
+        intrinsics = load_K_from_file(str(run_config.intrinsics_file))
+    else:
+        intrinsics = load_kitti_intrinsics(session)
+    frames = load_kitti_frames(image_paths, resize=None, max_frames=run_config.max_frames)
+    return SLAMInput(frames=frames, intrinsics=intrinsics, kitti_gt_positions=gt_positions)
+
+
+def prepare_video_input(
+    video_path: Path,
+    run_config: SLAMRunConfig,
+    intrinsics_file: Path | None = None,
+) -> SLAMInput:
+    if not video_path.exists():
+        raise FileNotFoundError(f"Could not find video file {video_path}")
+    frames_iter = load_video_frames(str(video_path), max_frames=run_config.max_frames)
+    try:
+        first_frame = next(frames_iter)
+    except StopIteration as exc:
+        raise RuntimeError(f"No frames found in {video_path}") from exc
+    frames = chain([first_frame], frames_iter)
+    gray = cv2.cvtColor(first_frame, cv2.COLOR_RGB2GRAY)
+    if intrinsics_file:
+        intrinsics = load_K_from_file(str(intrinsics_file))
+    else:
+        intrinsics = make_K(gray.shape[1], gray.shape[0])
+    return SLAMInput(frames=frames, intrinsics=intrinsics)
+
+
+def evaluate_kitti_trajectory(
+    gt_positions: np.ndarray,
+    est_positions: np.ndarray,
+) -> dict[str, float]:
+    min_len = min(len(gt_positions), len(est_positions))
+    gt_xy = gt_positions[:min_len, :2]
+    est_xy = est_positions[:min_len, :2]
+    return compute_additional_metrics(gt_xy, est_xy)
+
+
+def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMResult:
+    """Run the SLAM pipeline and optionally compute KITTI metrics."""
+    path_estimator = VehiclePathLiveAnimator()
+    bow_db = BoWDatabase()
+    pose_graph = PoseGraph3D()
+
+    frames_iter = iter(slam_input.frames)
+    try:
+        first_frame = next(frames_iter)
+    except StopIteration as exc:
+        raise RuntimeError("No frames available for SLAM") from exc
+    prev_frame = cv2.cvtColor(first_frame, cv2.COLOR_RGB2GRAY)
+    frame_id = 0
+
+    cv2_orb_detector: FeatureDetector_t = (
+        lambda img: cv2.ORB_create().detectAndCompute(img, None)
+    )
+    prev_keypoints, prev_desc = orb_detect(prev_frame, cv2_orb_detector)
+    bow_db.add_frame(frame_id, prev_desc)
+    frames_data = {frame_id: (prev_frame, prev_keypoints, prev_desc)}
+    pose_graph.add_pose(np.eye(3), np.zeros(3))
+
+    for color_frame in frames_iter:
+        frame_id += 1
+        curr_img = cv2.cvtColor(color_frame, cv2.COLOR_RGB2GRAY)
+        prev_img = prev_frame
+        curr_keypoints, curr_desc = orb_detect(curr_img, cv2_orb_detector)
+        mask = (
+            compute_dynamic_mask(prev_img, curr_img)
+            if run_config.semantic_masking
+            else None
+        )
+        prev_keypoints_filt, prev_desc_filt = filter_keypoints(
+            prev_keypoints,
+            prev_desc,
+            mask,
+        )
+        curr_keypoints, curr_desc = filter_keypoints(
+            curr_keypoints,
+            curr_desc,
+            mask,
+        )
+        try:
+            R, t = estimate_pose_optical_flow(
+                prev_img,
+                curr_img,
+                prev_keypoints_filt,
+                slam_input.intrinsics,
+            )
+            logging.debug("Pose R=%s t=%s", R.tolist(), t.tolist())
+        except Exception as exc:
+            logging.warning("Optical flow pose failed: %s", exc)
+            try:
+                R, t = estimate_pose_from_orb(
+                    prev_keypoints_filt,
+                    prev_desc_filt,
+                    curr_keypoints,
+                    curr_desc,
+                    slam_input.intrinsics,
+                )
+                logging.debug("Fallback ORB pose used")
+            except Exception as exc2:
+                logging.warning("Pose estimation failed: %s", exc2)
+                try:
+                    _, R, t = estimate_homography_from_orb(
+                        prev_keypoints_filt,
+                        prev_desc_filt,
+                        curr_keypoints,
+                        curr_desc,
+                        slam_input.intrinsics,
+                    )
+                    logging.debug("Fallback homography pose used")
+                except Exception:
+                    prev_frame = curr_img
+                    prev_keypoints = curr_keypoints
+                    prev_desc = curr_desc
+                    continue
+
+        pose_graph.add_pose(R, t)
+        path_estimator.add_transform(R, t)
+
+        loop_id = bow_db.detect_loop(curr_desc)
+        if loop_id is not None and loop_id in frames_data:
+            _, loop_kp, loop_desc = frames_data[loop_id]
+            try:
+                R_loop, t_loop = estimate_pose_from_orb(
+                    loop_kp,
+                    loop_desc,
+                    curr_keypoints,
+                    curr_desc,
+                    slam_input.intrinsics,
+                )
+            except Exception as exc:
+                logging.warning("Loop closure transform failed: %s", exc)
+                try:
+                    _, R_loop, t_loop = estimate_homography_from_orb(
+                        loop_kp,
+                        loop_desc,
+                        curr_keypoints,
+                        curr_desc,
+                        slam_input.intrinsics,
+                    )
+                    logging.debug("Fallback homography for loop used")
+                except Exception as exc2:
+                    logging.warning("Fallback loop closure failed: %s", exc2)
+                    R_loop = t_loop = None
+            if R_loop is not None:
+                pose_graph.add_loop(loop_id, frame_id, R_loop, t_loop)
+                path_estimator.add_loop_edge(loop_id, frame_id)
+                optimized = pose_graph.optimize()
+                path_estimator.set_optimized_poses(optimized)
+                orig = np.array([p[:2, 2] for p in pose_graph.poses])
+                opt = np.array([p[:2, 2] for p in optimized])
+                rmse = np.sqrt(np.mean((orig - opt) ** 2))
+                logging.info("Pose graph optimised (RMSE=%.4f)", rmse)
+
+        bow_db.add_frame(frame_id, curr_desc)
+        frames_data[frame_id] = (curr_img, curr_keypoints, curr_desc)
+        prev_frame = curr_img
+        prev_keypoints = curr_keypoints
+        prev_desc = curr_desc
+        time.sleep(run_config.sleep_time)
+        if run_config.pause_time > 0:
+            plt.pause(run_config.pause_time)
+    path_estimator.stop(run_config.save_plot)
+
+    positions = np.array(path_estimator.positions)
+    if run_config.save_poses:
+        np.savetxt(run_config.save_poses, positions, fmt="%.6f")
+
+    metrics = None
+    if slam_input.kitti_gt_positions is not None:
+        metrics = evaluate_kitti_trajectory(
+            slam_input.kitti_gt_positions,
+            positions,
+        )
+        for key, value in metrics.items():
+            logging.info("KITTI comparison: %s %.4f", key, value)
+    return SLAMResult(positions=positions, metrics=metrics)
+
+
+def run_kitti_test(
+    kitti_config: KittiConfig,
+    run_config: SLAMRunConfig,
+) -> SLAMResult:
+    """Convenience helper to run and report a KITTI evaluation."""
+    slam_input = prepare_kitti_input(kitti_config, run_config)
+    result = run_visual_slam(slam_input, run_config)
+    if result.metrics and kitti_config.report_path:
+        with open(kitti_config.report_path, "w") as f:
+            for key, value in result.metrics.items():
+                f.write(f"{key} {value:.4f}\n")
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Offline visual SLAM demo")
     parser.add_argument(
@@ -376,204 +620,41 @@ def main() -> None:
 
     _init_logging(args.log_level)
 
-    kitti_session = None
-    kitti_gt_positions = None
-    kitti_paths: list[Path] | None = None
+    run_config = SLAMRunConfig(
+        max_frames=args.max_frames,
+        sleep_time=args.sleep_time,
+        pause_time=args.pause_time,
+        semantic_masking=args.semantic_masking,
+        intrinsics_file=Path(args.intrinsics_file) if args.intrinsics_file else None,
+        save_plot=Path(args.save_plot) if args.save_plot else None,
+        save_poses=Path(args.save_poses) if args.save_poses else None,
+    )
+
     if args.kitti_base_dir:
         if not args.kitti_date or not args.kitti_drive:
             raise SystemExit("KITTI mode requires --kitti_date and --kitti_drive")
-        drive_id = _normalize_drive_id(args.kitti_drive)
-        kitti_session = KittiRawSession(
+        kitti_config = KittiConfig(
             base_dir=Path(args.kitti_base_dir),
             date=args.kitti_date,
-            drive=drive_id,
+            drive=args.kitti_drive,
             camera=args.kitti_camera,
+            report_path=Path(args.kitti_report) if args.kitti_report else None,
         )
-        kitti_paths = load_kitti_image_paths(kitti_session)
-        kitti_gt_positions = load_kitti_oxts_positions(kitti_session)
-    else:
-        # Ensure the input video exists.  When the user does not provide a video
-        # path we fall back to the sample clip used in tests and download it on
-        # demand.  This provides a better out-of-the-box experience while still
-        # allowing custom videos to be supplied.
-        video_path = Path(args.video)
-        if not video_path.exists():
-            if args.video == SAMPLE_VIDEO_PATH:
-                video_path = ensure_sample_video(video_path)
-            else:
-                raise SystemExit(f"Could not find video file {video_path}")
+        run_kitti_test(kitti_config, run_config)
+        return
 
-    # Only display the estimated trajectory.  The previous demo showed the
-    # input video alongside the path which cluttered the visualisation and was
-    # unnecessary for basic inspection.  By letting ``VehiclePathLiveAnimator``
-    # create its own figure we focus solely on the recovered camera motion.
-    path_estimator = VehiclePathLiveAnimator()
-
-    bow_db = BoWDatabase()
-    pose_graph = PoseGraph3D()
-    if kitti_session is not None and kitti_paths is not None:
-        frames = load_kitti_frames(kitti_paths, resize=None, max_frames=args.max_frames)
-    else:
-        frames = load_video_frames(str(video_path), max_frames=args.max_frames)
-
-    # Read the first frame and initialise feature detection
-    prev_frame = cv2.cvtColor(next(frames), cv2.COLOR_RGB2GRAY)
-
-    if args.intrinsics_file:
-        K = load_K_from_file(args.intrinsics_file)
-    elif kitti_session is not None:
-        K = load_kitti_intrinsics(kitti_session)
-    else:
-        K = make_K(prev_frame.shape[1], prev_frame.shape[0])
-    frame_id = 0
-
-    # Process first frame
-    cv2_orb_detector: FeatureDetector_t = (
-        lambda img: cv2.ORB_create().detectAndCompute(img, None)
-    )
-    prev_keypoints, prev_desc = orb_detect(prev_frame, cv2_orb_detector)
-    bow_db.add_frame(frame_id, prev_desc)
-    frames_data = {frame_id: (prev_frame, prev_keypoints, prev_desc)}
-    pose_graph.add_pose(np.eye(3), np.zeros(3))  # initial pose
-
-    for color_frame in frames:
-        frame_id += 1
-        curr_img = cv2.cvtColor(color_frame, cv2.COLOR_RGB2GRAY)
-        prev_img = prev_frame
-        cv2_orb_detector: FeatureDetector_t = (
-            lambda img: cv2.ORB_create().detectAndCompute(img, None)
-        )
-        # Alternative feature detector example using SIFT
-        # cv2_sift_detector: FeatureDetector_t = (
-        #     lambda img: cv2.SIFT_create().detectAndCompute(img, None)
-        # )
-        # custom_orb_detector: FeatureDetector_t = (
-        #     lambda img: my_custom_orb(img)
-        # )
-        curr_keypoints, curr_desc = orb_detect(curr_img, cv2_orb_detector)
-        mask = (
-            compute_dynamic_mask(prev_img, curr_img)
-            if args.semantic_masking
-            else None
-        )
-        prev_keypoints_filt, prev_desc_filt = filter_keypoints(
-            prev_keypoints,
-            prev_desc,
-            mask,
-        )
-        curr_keypoints, curr_desc = filter_keypoints(
-            curr_keypoints,
-            curr_desc,
-            mask,
-        )
-        # frame_with_keypoints = cv2.drawKeypoints(
-        #     gray_additional_frame, keypoints, None,
-        #     flags=cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS
-        # )
-        try:
-            R, t = estimate_pose_optical_flow(prev_img, curr_img, prev_keypoints_filt, K)
-            logging.debug("Pose R=%s t=%s", R.tolist(), t.tolist())
-        except Exception as exc:
-            logging.warning("Optical flow pose failed: %s", exc)
-            try:
-                R, t = estimate_pose_from_orb(
-                    prev_keypoints_filt,
-                    prev_desc_filt,
-                    curr_keypoints,
-                    curr_desc,
-                    K,
-                )
-                logging.debug("Fallback ORB pose used")
-            except Exception as exc2:
-                logging.warning("Pose estimation failed: %s", exc2)
-                try:
-                    _, R, t = estimate_homography_from_orb(
-                        prev_keypoints_filt,
-                        prev_desc_filt,
-                        curr_keypoints,
-                        curr_desc,
-                        K,
-                    )
-                    logging.debug("Fallback homography pose used")
-                except Exception:
-                    prev_frame = curr_img
-                    prev_keypoints = curr_keypoints
-                    prev_desc = curr_desc
-                    continue
-
-        # Alternative homography estimation using SIFT
-        # H, R, t = estimate_homography_from_sift(
-        #     prev_keypoints,
-        #     prev_desc,
-        #     curr_keypoints,
-        #     curr_desc,
-        # )
-        pose_graph.add_pose(R, t)
-        path_estimator.add_transform(R, t)
-
-        # Loop closure detection
-        loop_id = bow_db.detect_loop(curr_desc)
-        if loop_id is not None and loop_id in frames_data:
-            loop_img, loop_kp, loop_desc = frames_data[loop_id]
-            try:
-                R_loop, t_loop = estimate_pose_from_orb(
-                    loop_kp,
-                    loop_desc,
-                    curr_keypoints,
-                    curr_desc,
-                    K,
-                )
-            except Exception as exc:
-                logging.warning("Loop closure transform failed: %s", exc)
-                try:
-                    _, R_loop, t_loop = estimate_homography_from_orb(
-                        loop_kp,
-                        loop_desc,
-                        curr_keypoints,
-                        curr_desc,
-                        K,
-                    )
-                    logging.debug("Fallback homography for loop used")
-                except Exception as exc2:
-                    logging.warning("Fallback loop closure failed: %s", exc2)
-                    R_loop = t_loop = None
-            if R_loop is not None:
-                pose_graph.add_loop(loop_id, frame_id, R_loop, t_loop)
-                path_estimator.add_loop_edge(loop_id, frame_id)
-                optimized = pose_graph.optimize()
-                path_estimator.set_optimized_poses(optimized)
-                orig = np.array([p[:2, 2] for p in pose_graph.poses])
-                opt = np.array([p[:2, 2] for p in optimized])
-                rmse = np.sqrt(np.mean((orig - opt) ** 2))
-                logging.info("Pose graph optimised (RMSE=%.4f)", rmse)
-
-        bow_db.add_frame(frame_id, curr_desc)
-        frames_data[frame_id] = (curr_img, curr_keypoints, curr_desc)
-        prev_frame = curr_img
-        prev_keypoints = curr_keypoints
-        prev_desc = curr_desc
-        time.sleep(args.sleep_time)
-        if args.pause_time > 0:
-            plt.pause(args.pause_time)
-    path_estimator.stop(args.save_plot)
-
-    if args.save_poses:
-        poses = np.array(path_estimator.positions)
-        np.savetxt(args.save_poses, poses, fmt="%.6f")
-
-    if kitti_gt_positions is not None:
-        est_positions = np.array(path_estimator.positions)
-        min_len = min(len(kitti_gt_positions), len(est_positions))
-        gt_xy = kitti_gt_positions[:min_len, :2]
-        est_xy = est_positions[:min_len, :2]
-        metrics = compute_additional_metrics(gt_xy, est_xy)
-        lines = [f"{k} {v:.4f}" for k, v in metrics.items()]
-        for line in lines:
-            logging.info("KITTI comparison: %s", line)
-        if args.kitti_report:
-            with open(args.kitti_report, "w") as f:
-                for line in lines:
-                    f.write(line + "\n")
+    # Ensure the input video exists. When the user does not provide a video
+    # path we fall back to the sample clip used in tests and download it on
+    # demand. This provides a better out-of-the-box experience while still
+    # allowing custom videos to be supplied.
+    video_path = Path(args.video)
+    if not video_path.exists():
+        if args.video == SAMPLE_VIDEO_PATH:
+            video_path = ensure_sample_video(video_path)
+        else:
+            raise SystemExit(f"Could not find video file {video_path}")
+    slam_input = prepare_video_input(video_path, run_config, run_config.intrinsics_file)
+    run_visual_slam(slam_input, run_config)
 
     # plt.axis('off')
     # plt.gca().set_position([0, 0, 1, 1])  # Fill the entire figure
