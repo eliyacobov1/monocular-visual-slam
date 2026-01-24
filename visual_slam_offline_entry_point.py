@@ -7,6 +7,7 @@ from typing import Callable
 import matplotlib.pyplot as plt
 import argparse
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from slam_path_estimator import VehiclePathLiveAnimator
@@ -14,6 +15,7 @@ from loop_closure import BoWDatabase
 from pose_graph import PoseGraph3D
 from homography import estimate_pose_from_orb, estimate_homography_from_orb
 from demo_utils import ensure_sample_video, DEFAULT_VIDEO_PATH
+from evaluate_trajectory import compute_additional_metrics
 
 
 def estimate_pose_optical_flow(prev_img: np.ndarray, curr_img: np.ndarray,
@@ -185,6 +187,116 @@ def load_video_frames(path, resize=(1080, 1920), max_frames=50):
     cap.release()
 
 
+@dataclass(frozen=True)
+class KittiRawSession:
+    base_dir: Path
+    date: str
+    drive: str
+    camera: str = "image_02"
+
+    @property
+    def date_dir(self) -> Path:
+        return self.base_dir / self.date
+
+    @property
+    def drive_dir(self) -> Path:
+        return self.date_dir / f"{self.date}_drive_{self.drive}_sync"
+
+    @property
+    def image_dir(self) -> Path:
+        return self.drive_dir / self.camera / "data"
+
+    @property
+    def oxts_dir(self) -> Path:
+        return self.drive_dir / "oxts" / "data"
+
+    @property
+    def calib_cam_to_cam(self) -> Path:
+        return self.date_dir / "calib_cam_to_cam.txt"
+
+
+def _normalize_drive_id(drive: str) -> str:
+    drive_str = str(drive)
+    return drive_str.zfill(4) if drive_str.isdigit() else drive_str
+
+
+def load_kitti_image_paths(session: KittiRawSession) -> list[Path]:
+    if not session.image_dir.exists():
+        raise FileNotFoundError(f"Could not find image directory {session.image_dir}")
+    image_paths = sorted(session.image_dir.glob("*.png"))
+    if not image_paths:
+        raise FileNotFoundError(f"No images found in {session.image_dir}")
+    return image_paths
+
+
+def load_kitti_oxts_positions(session: KittiRawSession) -> np.ndarray:
+    if not session.oxts_dir.exists():
+        raise FileNotFoundError(f"Could not find oxts directory {session.oxts_dir}")
+    oxts_files = sorted(session.oxts_dir.glob("*.txt"))
+    if not oxts_files:
+        raise FileNotFoundError(f"No oxts files found in {session.oxts_dir}")
+
+    lat0 = lon0 = alt0 = None
+    positions: list[np.ndarray] = []
+    earth_radius = 6378137.0
+
+    for oxts_file in oxts_files:
+        with open(oxts_file) as f:
+            line = f.readline().strip()
+        if not line:
+            continue
+        parts = line.split()
+        lat, lon, alt = float(parts[0]), float(parts[1]), float(parts[2])
+        if lat0 is None:
+            lat0, lon0, alt0 = lat, lon, alt
+        d_lat = np.radians(lat - lat0)
+        d_lon = np.radians(lon - lon0)
+        x = d_lon * earth_radius * np.cos(np.radians(lat0))
+        y = d_lat * earth_radius
+        z = alt - alt0
+        positions.append(np.array([x, y, z], dtype=float))
+
+    if not positions:
+        raise RuntimeError("No valid OXTS entries found")
+    return np.vstack(positions)
+
+
+def load_kitti_intrinsics(session: KittiRawSession) -> np.ndarray:
+    calib_path = session.calib_cam_to_cam
+    if not calib_path.exists():
+        raise FileNotFoundError(f"Could not find calibration file {calib_path}")
+    camera_idx = session.camera.split("_")[-1]
+    target_key = f"P_rect_{camera_idx}:"
+    with open(calib_path) as f:
+        for line in f:
+            if line.startswith(target_key):
+                values = [float(v) for v in line.split()[1:]]
+                P = np.array(values).reshape(3, 4)
+                fx, fy = P[0, 0], P[1, 1]
+                cx, cy = P[0, 2], P[1, 2]
+                return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]])
+    raise RuntimeError(f"Camera intrinsics not found in {calib_path}")
+
+
+def load_kitti_frames(
+    image_paths: list[Path],
+    resize: tuple[int, int] | None = None,
+    max_frames: int | None = None,
+):
+    count = 0
+    for path in image_paths:
+        if max_frames is not None and count >= max_frames:
+            break
+        frame = cv2.imread(str(path))
+        if frame is None:
+            continue
+        if resize is not None:
+            frame = cv2.resize(frame, resize)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        count += 1
+        yield frame
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Offline visual SLAM demo")
     parser.add_argument(
@@ -197,6 +309,31 @@ def main() -> None:
         type=int,
         default=10000,
         help="Maximum number of frames to process",
+    )
+    parser.add_argument(
+        "--kitti_base_dir",
+        help="Base directory containing KITTI raw data (e.g., /data/kitti_raw)",
+        default=None,
+    )
+    parser.add_argument(
+        "--kitti_date",
+        help="KITTI date folder (e.g., 2011_09_26)",
+        default=None,
+    )
+    parser.add_argument(
+        "--kitti_drive",
+        help="KITTI drive id (e.g., 0001)",
+        default=None,
+    )
+    parser.add_argument(
+        "--kitti_camera",
+        default="image_02",
+        help="KITTI camera folder to use (default: image_02)",
+    )
+    parser.add_argument(
+        "--kitti_report",
+        help="Optional path to save KITTI trajectory comparison metrics",
+        default=None,
     )
     parser.add_argument(
         "--log_level",
@@ -239,16 +376,32 @@ def main() -> None:
 
     _init_logging(args.log_level)
 
-    # Ensure the input video exists.  When the user does not provide a video
-    # path we fall back to the sample clip used in tests and download it on
-    # demand.  This provides a better out-of-the-box experience while still
-    # allowing custom videos to be supplied.
-    video_path = Path(args.video)
-    if not video_path.exists():
-        if args.video == SAMPLE_VIDEO_PATH:
-            video_path = ensure_sample_video(video_path)
-        else:
-            raise SystemExit(f"Could not find video file {video_path}")
+    kitti_session = None
+    kitti_gt_positions = None
+    kitti_paths: list[Path] | None = None
+    if args.kitti_base_dir:
+        if not args.kitti_date or not args.kitti_drive:
+            raise SystemExit("KITTI mode requires --kitti_date and --kitti_drive")
+        drive_id = _normalize_drive_id(args.kitti_drive)
+        kitti_session = KittiRawSession(
+            base_dir=Path(args.kitti_base_dir),
+            date=args.kitti_date,
+            drive=drive_id,
+            camera=args.kitti_camera,
+        )
+        kitti_paths = load_kitti_image_paths(kitti_session)
+        kitti_gt_positions = load_kitti_oxts_positions(kitti_session)
+    else:
+        # Ensure the input video exists.  When the user does not provide a video
+        # path we fall back to the sample clip used in tests and download it on
+        # demand.  This provides a better out-of-the-box experience while still
+        # allowing custom videos to be supplied.
+        video_path = Path(args.video)
+        if not video_path.exists():
+            if args.video == SAMPLE_VIDEO_PATH:
+                video_path = ensure_sample_video(video_path)
+            else:
+                raise SystemExit(f"Could not find video file {video_path}")
 
     # Only display the estimated trajectory.  The previous demo showed the
     # input video alongside the path which cluttered the visualisation and was
@@ -258,13 +411,18 @@ def main() -> None:
 
     bow_db = BoWDatabase()
     pose_graph = PoseGraph3D()
-    frames = load_video_frames(str(video_path), max_frames=args.max_frames)
+    if kitti_session is not None and kitti_paths is not None:
+        frames = load_kitti_frames(kitti_paths, resize=None, max_frames=args.max_frames)
+    else:
+        frames = load_video_frames(str(video_path), max_frames=args.max_frames)
 
     # Read the first frame and initialise feature detection
     prev_frame = cv2.cvtColor(next(frames), cv2.COLOR_RGB2GRAY)
 
     if args.intrinsics_file:
         K = load_K_from_file(args.intrinsics_file)
+    elif kitti_session is not None:
+        K = load_kitti_intrinsics(kitti_session)
     else:
         K = make_K(prev_frame.shape[1], prev_frame.shape[0])
     frame_id = 0
@@ -402,6 +560,20 @@ def main() -> None:
     if args.save_poses:
         poses = np.array(path_estimator.positions)
         np.savetxt(args.save_poses, poses, fmt="%.6f")
+
+    if kitti_gt_positions is not None:
+        est_positions = np.array(path_estimator.positions)
+        min_len = min(len(kitti_gt_positions), len(est_positions))
+        gt_xy = kitti_gt_positions[:min_len, :2]
+        est_xy = est_positions[:min_len, :2]
+        metrics = compute_additional_metrics(gt_xy, est_xy)
+        lines = [f"{k} {v:.4f}" for k, v in metrics.items()]
+        for line in lines:
+            logging.info("KITTI comparison: %s", line)
+        if args.kitti_report:
+            with open(args.kitti_report, "w") as f:
+                for line in lines:
+                    f.write(line + "\n")
 
     # plt.axis('off')
     # plt.gca().set_position([0, 0, 1, 1])  # Fill the entire figure
