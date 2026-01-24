@@ -117,3 +117,33 @@ The script prints summary statistics for both metrics. When `--report` is
 given the results are also written to the specified file. Using the updated
 OpenCV‑based pose estimation and similarity aligned evaluation we tested the
 pipeline on a short synthetic translation clip.
+
+## KITTI odometry sequences
+
+For KITTI odometry, place the dataset under a root directory (either the
+official `sequences/00` style layout or a flat `00` directory). The new
+`kitti_dataset.py` helper iterates over frames and parses calibration files:
+
+```python
+from pathlib import Path
+from kitti_dataset import KittiSequence
+
+sequence = KittiSequence(Path("/data/kitti"), "00", camera="image_2")
+for frame in sequence.iter_frames():
+    print(frame.index, frame.path, frame.timestamp)
+print(sequence.camera_intrinsics())
+```
+
+When evaluating KITTI trajectories, use the odometry format flag to extract
+translations from the 3x4 pose matrices. JSON and CSV reports are also
+available for reproducible benchmarks:
+
+```bash
+python evaluate_trajectory.py \
+    --gt poses/00.txt \
+    --est estimated.txt \
+    --format kitti_odom \
+    --rpe_delta 5 \
+    --json_report kitti_metrics.json \
+    --csv_report kitti_metrics.csv
+```
