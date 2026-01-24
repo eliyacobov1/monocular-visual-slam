@@ -1,0 +1,17 @@
+{
+  "run_id": "tum_freiburg1_eval",
+  "dataset": "tum",
+  "seed": 7,
+  "output_dir": "reports/tum_freiburg1",
+  "trajectories": [
+    {
+      "name": "freiburg1_xyz",
+      "gt_path": "data/tum/rgbd_dataset_freiburg1_xyz/groundtruth.txt",
+      "est_path": "outputs/tum_freiburg1/estimated.txt",
+      "format": "xy",
+      "cols": "1,2",
+      "est_cols": "0,1",
+      "rpe_delta": 5
+    }
+  ]
+}

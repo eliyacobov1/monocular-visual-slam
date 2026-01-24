@@ -1,0 +1,12 @@
+{
+  "run_id": "kitti_odometry_eval",
+  "dataset": "kitti",
+  "seed": 7,
+  "output_dir": "reports/kitti_odometry",
+  "kitti_root": "/data/kitti",
+  "gt_root": "/data/kitti/poses",
+  "est_root": "outputs/poses",
+  "sequences": ["00"],
+  "format": "kitti_odom",
+  "rpe_delta": 5
+}

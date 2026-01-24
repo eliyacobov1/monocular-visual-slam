@@ -15,7 +15,8 @@ acceleration follow once accuracy targets are met.
 - **Scale handling**: research strategies for monocular scale drift
   compensation (scene constraints, motion priors, or learning-based scale hints).
 - **Trajectory evaluation**: standardize ATE/RPE output for KITTI with a clear
-  JSON/CSV report and reproducible configs.
+  JSON/CSV report and reproducible configs (see `evaluation_harness.py` and
+  `configs/evaluation/` for the current harness).
 - **Loop closure accuracy**: enhance place recognition (e.g., better BoW vocab,
   TF-IDF weighting, or NetVLAD-like descriptors).
 
