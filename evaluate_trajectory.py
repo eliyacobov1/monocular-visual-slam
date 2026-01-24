@@ -2,6 +2,8 @@
 """Compute ATE and RPE between ground truth and estimated poses."""
 
 import argparse
+import csv
+import json
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -120,10 +122,51 @@ def write_report(path: str, lines: Iterable[str]) -> None:
             f.write(line + "\n")
 
 
+def write_json_report(path: str, payload: dict) -> None:
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+
+
+def write_csv_report(path: str, payload: dict) -> None:
+    metrics = payload.get("metrics", {})
+    metadata = payload.get("metadata", {})
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["metric", "value"])
+        for key, value in metrics.items():
+            writer.writerow([key, value])
+        if metadata:
+            writer.writerow([])
+            writer.writerow(["metadata", "value"])
+            for key, value in metadata.items():
+                writer.writerow([key, value])
+
+
+def build_report_payload(metrics: dict, metadata: dict) -> dict:
+    return {
+        "metrics": metrics,
+        "metadata": metadata,
+    }
+
+
+def resolve_columns(format_name: str, cols: str | None) -> list[int]:
+    if format_name == "kitti_odom":
+        return [3, 7, 11]
+    if cols is None:
+        raise ValueError("Column indices must be provided when format is 'xy'")
+    return [int(c) for c in cols.split(",")]
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate trajectory ATE/RPE")
     parser.add_argument("--gt", required=True, help="Path to ground truth txt")
     parser.add_argument("--est", required=True, help="Path to estimated poses")
+    parser.add_argument(
+        "--format",
+        choices=["xy", "kitti_odom"],
+        default="xy",
+        help="Input format for trajectories (default: xy)",
+    )
     parser.add_argument(
         "--cols",
         default="0,1",
@@ -142,17 +185,38 @@ if __name__ == "__main__":
         help="Optional path to save the error metrics",
         default=None,
     )
+    parser.add_argument(
+        "--json_report",
+        help="Optional path to save metrics in JSON format",
+        default=None,
+    )
+    parser.add_argument(
+        "--csv_report",
+        help="Optional path to save metrics in CSV format",
+        default=None,
+    )
     args = parser.parse_args()
 
-    col_idx = [int(c) for c in args.cols.split(",")]
+    col_idx = resolve_columns(args.format, args.cols)
     gt = load_traj(args.gt, col_idx)
     est_cols = col_idx if args.est_cols is None else [int(c) for c in args.est_cols.split(",")]
     est = load_traj(args.est, est_cols)
 
     metrics = compute_additional_metrics(gt, est, delta=args.rpe_delta)
+    metadata = {
+        "format": args.format,
+        "rpe_delta": args.rpe_delta,
+        "gt_path": args.gt,
+        "est_path": args.est,
+    }
+    payload = build_report_payload(metrics, metadata)
 
     lines = [f"{k} {v:.4f}" for k, v in metrics.items()]
     for line in lines:
         print(line)
     if args.report:
         write_report(args.report, lines)
+    if args.json_report:
+        write_json_report(args.json_report, payload)
+    if args.csv_report:
+        write_csv_report(args.csv_report, payload)
