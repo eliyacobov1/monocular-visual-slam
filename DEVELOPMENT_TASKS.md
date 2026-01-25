@@ -5,9 +5,37 @@ performance. The near-term focus is **accuracy on KITTI** while keeping the
 system extensible for multi-camera and additional sensors. Performance and C++
 acceleration follow once accuracy targets are met.
 
-## Near-term (Accuracy + KITTI)
+## Recently completed
 - **KITTI data loader**: add sequence ingestion for KITTI raw/odometry formats,
   including calibration parsing and synchronized frame iteration.
+- **Config-driven evaluation harness**: reproducible metrics runs with
+  JSON/CSV reporting and config hashing for traceability.
+- **Keyframe management + local bundle adjustment**: introduced a keyframe
+  selection policy and a sliding-window BA to improve short-term pose stability.
+
+## Next task decision (Accuracy + KITTI)
+**Decision**: prioritize **geometric loop-closure verification** next to reduce
+false positives before adding loop constraints to the pose graph.
+
+**Rationale**
+- The current BoW loop detection does not enforce geometric consistency, which
+  can introduce incorrect loop edges and degrade global trajectory accuracy.
+- Adding verification (PnP + RANSAC or essential-matrix checks) directly targets
+  KITTI evaluation robustness without changing the feature pipeline.
+
+**Deliverables**
+- Geometric verification stage for loop candidates (PnP + RANSAC or essential
+  matrix checks) with clear acceptance thresholds.
+- Loop-closure constraints added only after verification passes, with logging
+  that captures verification scores and rejection reasons.
+- Evaluation harness updates to record loop-closure impact on KITTI ATE/RPE and
+  persist per-run metadata.
+
+**Follow-on task**
+- **Scale handling**: research strategies for monocular scale drift
+  compensation (scene constraints, motion priors, or learning-based scale hints).
+
+## Near-term (Accuracy + KITTI)
 - **Better feature/motion estimation**:
   - Evaluate alternative feature pipelines (e.g., SuperPoint + SuperGlue) behind
     an interface that still supports ORB.

@@ -11,6 +11,8 @@ compact yet complete and features:
   camera poses and refines it when loops are detected.
 * **Loop closure detection** – `loop_closure.py` implements a simple BoW
   database for recognising previously seen locations.
+* **Local bundle adjustment** – keyframes are selected and refined with a
+  sliding-window BA to stabilise short-term trajectory estimates.
 * Additional helpers for essential‑matrix estimation and camera intrinsics.
 
 ## Repository structure

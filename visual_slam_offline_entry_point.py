@@ -17,6 +17,7 @@ from slam_path_estimator import VehiclePathLiveAnimator
 from loop_closure import BoWDatabase
 from pose_graph import PoseGraph3D
 from homography import estimate_pose_from_orb, estimate_homography_from_orb
+from keyframe_manager import KeyframeManager
 from demo_utils import ensure_sample_video, DEFAULT_VIDEO_PATH
 from evaluate_trajectory import compute_additional_metrics
 from cam_intrinsics_estimation import make_K, load_K_from_file
@@ -391,6 +392,7 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
     path_estimator = VehiclePathLiveAnimator()
     bow_db = BoWDatabase()
     pose_graph = PoseGraph3D()
+    keyframe_manager = KeyframeManager()
 
     frames_iter = iter(slam_input.frames)
     try:
@@ -407,6 +409,7 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
     bow_db.add_frame(frame_id, prev_desc)
     frames_data = {frame_id: (prev_frame, prev_keypoints, prev_desc)}
     pose_graph.add_pose(np.eye(3), np.zeros(3))
+    keyframe_manager.add_keyframe(frame_id, pose_graph.poses[-1], prev_keypoints, prev_desc)
 
     for color_frame in frames_iter:
         frame_id += 1
@@ -466,6 +469,19 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
 
         pose_graph.add_pose(R, t)
         path_estimator.add_transform(R, t)
+        current_pose = pose_graph.poses[-1]
+        if keyframe_manager.should_add_keyframe(current_pose, curr_desc):
+            keyframe_manager.add_keyframe(frame_id, current_pose, curr_keypoints, curr_desc)
+            ba_result = keyframe_manager.run_local_bundle_adjustment(slam_input.intrinsics)
+            if ba_result is not None:
+                for frame_index, pose in zip(ba_result.frame_ids, ba_result.poses):
+                    if frame_index < len(pose_graph.poses):
+                        pose_graph.poses[frame_index] = pose
+                path_estimator.set_optimized_poses(list(pose_graph.poses))
+                logging.info(
+                    "Local bundle adjustment updated %d keyframes",
+                    len(ba_result.frame_ids),
+                )
 
         loop_id = bow_db.detect_loop(curr_desc)
         if loop_id is not None and loop_id in frames_data:
