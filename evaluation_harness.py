@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import random
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +46,8 @@ class EvaluationConfig:
     output_dir: Path
     seed: int
     trajectories: tuple[TrajectoryEntry, ...]
+    config_path: Path
+    config_hash: str
 
 
 def _timestamp() -> str:
@@ -66,6 +69,11 @@ def _resolve_path(value: str | Path, base_dir: Path) -> Path:
 def _load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _hash_config(path: Path) -> str:
+    content = path.read_bytes()
+    return hashlib.sha256(content).hexdigest()
 
 
 def _build_entry_from_mapping(mapping: dict[str, Any], base_dir: Path) -> TrajectoryEntry:
@@ -112,6 +120,7 @@ def _build_kitti_entries(config: dict[str, Any], base_dir: Path) -> list[Traject
 def load_config(config_path: Path) -> EvaluationConfig:
     base_dir = config_path.parent
     raw = _load_json(config_path)
+    config_hash = _hash_config(config_path)
 
     run_id = raw.get("run_id", config_path.stem)
     dataset = raw.get("dataset", "custom")
@@ -136,6 +145,8 @@ def load_config(config_path: Path) -> EvaluationConfig:
         output_dir=output_dir,
         seed=seed,
         trajectories=trajectories,
+        config_path=config_path,
+        config_hash=config_hash,
     )
 
 
@@ -206,6 +217,8 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         "dataset": config.dataset,
         "seed": config.seed,
         "timestamp": _timestamp(),
+        "config_path": str(config.config_path),
+        "config_hash": config.config_hash,
         "aggregate_metrics": aggregate,
         "per_sequence": per_sequence_reports,
     }

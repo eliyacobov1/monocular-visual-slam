@@ -139,6 +139,8 @@ python evaluation_harness.py --config configs/evaluation/tum_freiburg1.json
 
 Each run writes `summary.json`/`summary.csv` and per-sequence reports under the
 configured `output_dir`, along with a plain-text metrics file for quick review.
+The summary now includes the evaluation config path and a SHA-256 hash of the
+config file to make runs reproducible and easier to compare over time.
 
 ## KITTI odometry sequences
 
