@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -38,6 +39,28 @@ def parse_kitti_calib_file(path: Path) -> dict[str, np.ndarray]:
         else:
             calib[key.strip()] = data
     return calib
+
+
+def parse_kitti_timestamp(value: str) -> datetime | None:
+    """Parse a KITTI timestamp string into a datetime.
+
+    Supports ISO timestamps (as in KITTI raw) and float seconds.
+    """
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+    except ValueError:
+        pass
+    try:
+        normalized = raw.replace(" ", "T")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except ValueError:
+        return None
 
 
 def resolve_camera_matrix(calib: dict[str, np.ndarray], camera_id: int) -> np.ndarray:
@@ -98,6 +121,9 @@ class KittiSequence:
         candidate = self.root / self.sequence
         if candidate.exists():
             return candidate
+        raw_candidates = sorted(self.root.glob(f"*/{self.sequence}"))
+        if raw_candidates:
+            return raw_candidates[0]
         raise FileNotFoundError(
             f"KITTI sequence '{self.sequence}' not found under {self.root}"
         )
@@ -127,24 +153,30 @@ class KittiSequence:
         if times_path.exists():
             return [float(t) for t in times_path.read_text().splitlines() if t.strip()]
         timestamp_path = self.image_dir / "timestamps.txt"
+        if not timestamp_path.exists() and self.image_dir.name == "data":
+            timestamp_path = self.image_dir.parent / "timestamps.txt"
         if timestamp_path.exists():
-            timestamps = []
+            parsed_times: list[datetime] = []
             for line in timestamp_path.read_text().splitlines():
-                line = line.strip()
-                if not line:
+                parsed = parse_kitti_timestamp(line)
+                if parsed is None:
                     continue
-                try:
-                    timestamps.append(float(line))
-                except ValueError:
-                    continue
-            return timestamps
+                parsed_times.append(parsed)
+            if not parsed_times:
+                return []
+            start = parsed_times[0]
+            return [float((entry - start).total_seconds()) for entry in parsed_times]
         return []
 
     def _load_calibration(self) -> dict[str, np.ndarray]:
-        for name in ("calib.txt", "calib_cam_to_cam.txt"):
-            calib_path = self.sequence_path / name
-            if calib_path.exists():
-                return parse_kitti_calib_file(calib_path)
+        search_roots = [self.sequence_path]
+        if self.sequence_path.parent != self.root:
+            search_roots.append(self.sequence_path.parent)
+        for root in search_roots:
+            for name in ("calib.txt", "calib_cam_to_cam.txt"):
+                calib_path = root / name
+                if calib_path.exists():
+                    return parse_kitti_calib_file(calib_path)
         LOGGER.warning("No calibration file found for %s", self.sequence_path)
         return {}
 
