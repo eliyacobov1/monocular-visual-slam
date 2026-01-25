@@ -28,6 +28,12 @@ The most relevant modules are:
 The demos download a short example clip on first use.  Use the
 entry‑point script to process the video and display the recovered trajectory:
 
+Install the Python dependencies first:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
 ```bash
 python visual_slam_offline_entry_point.py
 ```
@@ -145,8 +151,9 @@ config file to make runs reproducible and easier to compare over time.
 ## KITTI odometry sequences
 
 For KITTI odometry, place the dataset under a root directory (either the
-official `sequences/00` style layout or a flat `00` directory). The new
-`kitti_dataset.py` helper iterates over frames and parses calibration files:
+official `sequences/00` style layout or a flat `00` directory). The
+`kitti_dataset.py` helper iterates over frames, parses calibration files, and
+uses `times.txt` for timestamps when available:
 
 ```python
 from pathlib import Path
@@ -155,6 +162,18 @@ from kitti_dataset import KittiSequence
 sequence = KittiSequence(Path("/data/kitti"), "00", camera="image_2")
 for frame in sequence.iter_frames():
     print(frame.index, frame.path, frame.timestamp)
+print(sequence.camera_intrinsics())
+```
+
+For KITTI raw sequences, point the root at the dataset folder that contains the
+date subdirectory (for example `2011_09_26/`). The loader automatically finds
+the drive sequence, parses `image_02/timestamps.txt`, and reads calibration from
+the date-level `calib_cam_to_cam.txt` file:
+
+```python
+sequence = KittiSequence(Path("/data/kitti_raw"), "2011_09_26_drive_0001_sync", camera="image_02")
+for frame in sequence.iter_frames():
+    print(frame.index, frame.timestamp, frame.path)
 print(sequence.camera_intrinsics())
 ```
 
