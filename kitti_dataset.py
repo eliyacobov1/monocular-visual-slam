@@ -142,7 +142,9 @@ class KittiSequence:
             candidates.append(self.sequence_path / alias / "data")
 
         for path in candidates:
-            if path.exists():
+            if not path.exists():
+                continue
+            if any(path.glob("*.png")):
                 return path
         raise FileNotFoundError(
             f"No image directory found for camera {self.camera} in {self.sequence_path}"

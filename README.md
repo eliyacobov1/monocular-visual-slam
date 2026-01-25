@@ -28,6 +28,12 @@ The most relevant modules are:
 The demos download a short example clip on first use.  Use the
 entry‑point script to process the video and display the recovered trajectory:
 
+Install the Python dependencies first:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
 ```bash
 python visual_slam_offline_entry_point.py
 ```
