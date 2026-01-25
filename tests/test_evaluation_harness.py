@@ -51,6 +51,9 @@ def test_evaluation_harness_runs(tmp_path: Path) -> None:
     assert summary["run_id"] == "unit_test"
     assert "aggregate_metrics" in summary
     assert "synthetic" in summary["per_sequence"]
+    assert "config_hash" in summary
+    assert summary["config_hash"]
+    assert summary["config_path"].endswith("config.json")
 
     summary_path = Path(config["output_dir"]) / "summary.json"
     assert summary_path.exists()
