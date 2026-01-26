@@ -16,7 +16,12 @@ import numpy as np
 from slam_path_estimator import VehiclePathLiveAnimator
 from loop_closure import BoWDatabase
 from pose_graph import PoseGraph3D
-from homography import estimate_pose_from_orb, estimate_homography_from_orb
+from homography import (
+    estimate_homography_from_orb,
+    estimate_homography_from_orb_with_inliers,
+    estimate_pose_from_orb,
+    estimate_pose_from_orb_with_inliers,
+)
 from keyframe_manager import KeyframeManager
 from demo_utils import ensure_sample_video, DEFAULT_VIDEO_PATH
 from evaluate_trajectory import compute_additional_metrics
@@ -199,6 +204,11 @@ class SLAMRunConfig:
     intrinsics_file: Path | None = None
     save_plot: Path | None = None
     save_poses: Path | None = None
+    loop_min_matches: int = 30
+    loop_min_inliers: int = 20
+    loop_min_inlier_ratio: float = 0.3
+    loop_ransac_threshold: float = 0.01
+    loop_edge_weight: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -487,29 +497,61 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
         if loop_id is not None and loop_id in frames_data:
             _, loop_kp, loop_desc = frames_data[loop_id]
             try:
-                R_loop, t_loop = estimate_pose_from_orb(
+                R_loop, t_loop, inliers, match_count = estimate_pose_from_orb_with_inliers(
                     loop_kp,
                     loop_desc,
                     curr_keypoints,
                     curr_desc,
                     slam_input.intrinsics,
+                    ransac_threshold=run_config.loop_ransac_threshold,
+                    min_matches=run_config.loop_min_matches,
                 )
+                inlier_count = len(inliers)
+                inlier_ratio = inlier_count / max(match_count, 1)
+                if inlier_count < run_config.loop_min_inliers or inlier_ratio < run_config.loop_min_inlier_ratio:
+                    logging.info(
+                        "Loop candidate rejected: frame=%d matches=%d inliers=%d ratio=%.2f",
+                        loop_id,
+                        match_count,
+                        inlier_count,
+                        inlier_ratio,
+                    )
+                    R_loop = t_loop = None
             except Exception as exc:
                 logging.warning("Loop closure transform failed: %s", exc)
                 try:
-                    _, R_loop, t_loop = estimate_homography_from_orb(
+                    _, R_loop, t_loop, inliers, match_count = estimate_homography_from_orb_with_inliers(
                         loop_kp,
                         loop_desc,
                         curr_keypoints,
                         curr_desc,
                         slam_input.intrinsics,
+                        min_matches=run_config.loop_min_matches,
                     )
-                    logging.debug("Fallback homography for loop used")
+                    inlier_count = len(inliers)
+                    inlier_ratio = inlier_count / max(match_count, 1)
+                    if inlier_count < run_config.loop_min_inliers or inlier_ratio < run_config.loop_min_inlier_ratio:
+                        logging.info(
+                            "Loop candidate rejected (homography): frame=%d matches=%d inliers=%d ratio=%.2f",
+                            loop_id,
+                            match_count,
+                            inlier_count,
+                            inlier_ratio,
+                        )
+                        R_loop = t_loop = None
+                    else:
+                        logging.debug("Fallback homography for loop used")
                 except Exception as exc2:
                     logging.warning("Fallback loop closure failed: %s", exc2)
                     R_loop = t_loop = None
             if R_loop is not None:
-                pose_graph.add_loop(loop_id, frame_id, R_loop, t_loop)
+                pose_graph.add_loop(
+                    loop_id,
+                    frame_id,
+                    R_loop,
+                    t_loop,
+                    weight=run_config.loop_edge_weight,
+                )
                 path_estimator.add_loop_edge(loop_id, frame_id)
                 optimized = pose_graph.optimize()
                 path_estimator.set_optimized_poses(optimized)
@@ -632,6 +674,36 @@ def main() -> None:
         help="Optional path to save estimated 2D poses (frame_index x y)",
         default=None,
     )
+    parser.add_argument(
+        "--loop_min_matches",
+        type=int,
+        default=30,
+        help="Minimum ORB matches required before loop verification",
+    )
+    parser.add_argument(
+        "--loop_min_inliers",
+        type=int,
+        default=20,
+        help="Minimum inliers required to accept a loop candidate",
+    )
+    parser.add_argument(
+        "--loop_min_inlier_ratio",
+        type=float,
+        default=0.3,
+        help="Minimum inlier ratio required to accept a loop candidate",
+    )
+    parser.add_argument(
+        "--loop_ransac_threshold",
+        type=float,
+        default=0.01,
+        help="RANSAC threshold for loop verification (essential matrix)",
+    )
+    parser.add_argument(
+        "--loop_edge_weight",
+        type=float,
+        default=0.5,
+        help="Pose-graph weight for accepted loop edges",
+    )
     args = parser.parse_args()
 
     _init_logging(args.log_level)
@@ -644,6 +716,11 @@ def main() -> None:
         intrinsics_file=Path(args.intrinsics_file) if args.intrinsics_file else None,
         save_plot=Path(args.save_plot) if args.save_plot else None,
         save_poses=Path(args.save_poses) if args.save_poses else None,
+        loop_min_matches=args.loop_min_matches,
+        loop_min_inliers=args.loop_min_inliers,
+        loop_min_inlier_ratio=args.loop_min_inlier_ratio,
+        loop_ransac_threshold=args.loop_ransac_threshold,
+        loop_edge_weight=args.loop_edge_weight,
     )
 
     if args.kitti_base_dir:

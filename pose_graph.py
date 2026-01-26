@@ -13,6 +13,7 @@ class Edge:
     j: int
     R: np.ndarray  # 2x2 rotation
     t: np.ndarray  # 2 translation
+    weight: float = 1.0
 
 class PoseGraph:
     def __init__(self) -> None:
@@ -30,9 +31,9 @@ class PoseGraph:
         logger.debug("Added pose %d: t=%s", len(self.poses) - 1, t.tolist())
         return len(self.poses) - 1
 
-    def add_loop(self, i: int, j: int, R: np.ndarray, t: np.ndarray) -> None:
-        self.edges.append(Edge(i, j, R, t))
-        logger.info("Added loop edge between %d and %d", i, j)
+    def add_loop(self, i: int, j: int, R: np.ndarray, t: np.ndarray, weight: float = 0.5) -> None:
+        self.edges.append(Edge(i, j, R, t, weight=weight))
+        logger.info("Added loop edge between %d and %d (weight=%.2f)", i, j, weight)
 
     def optimize(self) -> List[np.ndarray]:
         def pose_vec_to_mats(x: np.ndarray) -> List[np.ndarray]:
@@ -58,15 +59,15 @@ class PoseGraph:
                 tij = Tij[:2, 2]
                 r_err = Rij - e.R[:2, :2]
                 t_err = tij - e.t[:2]
-                res.extend(r_err.ravel())
-                res.extend(t_err.ravel())
+                res.extend((r_err * e.weight).ravel())
+                res.extend((t_err * e.weight).ravel())
             return np.array(res)
 
         x0 = []
         for pose in self.poses:
             x0.extend([pose[0, 2], pose[1, 2], np.arctan2(pose[1,0], pose[0,0])])
         x0 = np.array(x0)
-        result = least_squares(residuals, x0, verbose=0)
+        result = least_squares(residuals, x0, verbose=0, loss="soft_l1")
         logger.info("Pose graph optimisation success: %s", result.success)
         return pose_vec_to_mats(result.x)
 
@@ -77,6 +78,7 @@ class Edge3D:
     j: int
     R: np.ndarray  # 3x3 rotation
     t: np.ndarray  # 3 translation
+    weight: float = 1.0
 
 
 class PoseGraph3D:
@@ -95,9 +97,9 @@ class PoseGraph3D:
         logger.debug("Added pose %d", len(self.poses) - 1)
         return len(self.poses) - 1
 
-    def add_loop(self, i: int, j: int, R: np.ndarray, t: np.ndarray) -> None:
-        self.edges.append(Edge3D(i, j, R, t))
-        logger.info("Added loop edge between %d and %d", i, j)
+    def add_loop(self, i: int, j: int, R: np.ndarray, t: np.ndarray, weight: float = 0.5) -> None:
+        self.edges.append(Edge3D(i, j, R, t, weight=weight))
+        logger.info("Added loop edge between %d and %d (weight=%.2f)", i, j, weight)
 
     def optimize(self) -> List[np.ndarray]:
         def pose_vec_to_mats(x: np.ndarray) -> List[np.ndarray]:
@@ -122,8 +124,8 @@ class PoseGraph3D:
                 tij = Tij[:3, 3]
                 r_err = Rij - e.R
                 t_err = tij - e.t
-                res.extend(r_err.ravel())
-                res.extend(t_err.ravel())
+                res.extend((r_err * e.weight).ravel())
+                res.extend((t_err * e.weight).ravel())
             return np.array(res)
 
         x0 = []
@@ -131,6 +133,6 @@ class PoseGraph3D:
             rvec, _ = cv2.Rodrigues(pose[:3, :3])
             x0.extend([pose[0,3], pose[1,3], pose[2,3], *rvec.ravel()])
         x0 = np.array(x0)
-        result = least_squares(residuals, x0, verbose=0)
+        result = least_squares(residuals, x0, verbose=0, loss="soft_l1")
         logger.info("3D pose graph optimisation success: %s", result.success)
         return pose_vec_to_mats(result.x)

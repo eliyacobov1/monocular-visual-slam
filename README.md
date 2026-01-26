@@ -52,6 +52,8 @@ Useful flags:
 * `--semantic_masking` – mask dynamic regions before feature detection using a
   simple frame‑difference algorithm.
 * `--intrinsics_file path` – load calibrated intrinsics (`fx fy cx cy`) from a text file.
+* `--loop_min_matches/--loop_min_inliers/--loop_min_inlier_ratio` – tune geometric
+  verification thresholds for accepting loop candidates.
 
 ## Interactive viewer
 
