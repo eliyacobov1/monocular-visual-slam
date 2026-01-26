@@ -70,11 +70,15 @@ def run_bundle_adjustment(
         raise ValueError("At least one pose is required for bundle adjustment")
 
     fixed_pose = poses[0]
-    pose_params = np.concatenate([_pose_to_vec(pose) for pose in poses[1:]])
+    num_poses = len(poses)
+    if any(obs.frame_index < 0 or obs.frame_index >= num_poses for obs in obs_list):
+        raise ValueError("Observations reference poses outside the provided window")
+
+    pose_vecs = [_pose_to_vec(pose) for pose in poses[1:]]
+    pose_params = np.concatenate(pose_vecs) if pose_vecs else np.empty(0)
     points_params = points_3d.ravel()
     x0 = np.hstack([pose_params, points_params])
 
-    num_poses = len(poses)
     num_opt_poses = len(poses) - 1
     num_points = points_3d.shape[0]
 
