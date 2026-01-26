@@ -86,3 +86,16 @@ def test_kitti_raw_sequence_iteration_with_timestamps(tmp_path: Path) -> None:
     assert intrinsics is not None
     np.testing.assert_allclose(intrinsics[0, 0], 7.0)
     np.testing.assert_allclose(intrinsics[1, 1], 7.0)
+
+
+def test_kitti_raw_prefers_data_dir(tmp_path: Path) -> None:
+    seq_root = tmp_path / "2011_09_26" / "2011_09_26_drive_0002_sync"
+    image_dir = seq_root / "image_02"
+    data_dir = image_dir / "data"
+    data_dir.mkdir(parents=True)
+    _write_dummy_image(data_dir / "0000000000.png")
+    (image_dir / "timestamps.txt").write_text("2011-09-26 13:02:35.123456\n")
+
+    sequence = KittiSequence(tmp_path, "2011_09_26_drive_0002_sync", camera="image_02")
+
+    assert sequence.image_dir == data_dir
