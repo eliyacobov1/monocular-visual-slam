@@ -14,26 +14,27 @@ acceleration follow once accuracy targets are met.
   selection policy and a sliding-window BA to improve short-term pose stability.
 
 ## Next task decision (Accuracy + KITTI)
-**Decision**: prioritize **geometric loop-closure verification** next to reduce
-false positives before adding loop constraints to the pose graph.
+**Decision**: implement **geometric loop-closure verification + robust loop
+constraints** before expanding feature pipelines.
 
 **Rationale**
 - The current BoW loop detection does not enforce geometric consistency, which
   can introduce incorrect loop edges and degrade global trajectory accuracy.
-- Adding verification (PnP + RANSAC or essential-matrix checks) directly targets
-  KITTI evaluation robustness without changing the feature pipeline.
+- Adding verification (PnP + RANSAC or essential-matrix checks) plus robust
+  constraint handling in the pose graph directly targets KITTI evaluation
+  robustness without changing the feature pipeline.
 
 **Deliverables**
 - Geometric verification stage for loop candidates (PnP + RANSAC or essential
-  matrix checks) with clear acceptance thresholds.
-- Loop-closure constraints added only after verification passes, with logging
-  that captures verification scores and rejection reasons.
+  matrix checks) with clear acceptance thresholds and per-candidate diagnostics.
+- Loop-closure constraints added only after verification passes, with a robust
+  loss or switchable constraints to downweight residual outliers.
 - Evaluation harness updates to record loop-closure impact on KITTI ATE/RPE and
-  persist per-run metadata.
+  persist per-run metadata (including verification stats).
 
 **Follow-on task**
-- **Scale handling**: research strategies for monocular scale drift
-  compensation (scene constraints, motion priors, or learning-based scale hints).
+- **Scale handling**: add a Sim(3)-aware pose-graph mode or a scale-drift
+  correction module that can align sub-trajectories on KITTI sequences.
 
 ## Near-term (Accuracy + KITTI)
 - **Better feature/motion estimation**:

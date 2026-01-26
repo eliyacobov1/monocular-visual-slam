@@ -364,6 +364,26 @@ def estimate_homography_from_orb(kp1, desc1, kp2, desc2, K=np.eye(3)):
     return H, R, t  # , inliers
 
 
+def estimate_homography_from_orb_with_inliers(
+    kp1,
+    desc1,
+    kp2,
+    desc2,
+    K=np.eye(3),
+    min_matches: int = 15,
+):
+    matches = match_orb_descriptors(desc1, desc2)
+    if len(matches) < min_matches:
+        raise RuntimeError("Too few matches after ratio+sym test")
+
+    src = np.asarray([kp1[i].pt for i, _ in matches])
+    dst = np.asarray([kp2[j].pt for _, j in matches])
+
+    H, inliers = ransac_homography(src, dst)
+    R, t = decompose_homography(H, K)
+    return H, R, t, inliers, len(matches)
+
+
 def estimate_pose_from_orb(kp1, des1, kp2, des2, K):
     """Estimate camera pose using our minimal essential matrix implementation."""
     matches = match_orb_descriptors(des1, des2)
@@ -376,6 +396,28 @@ def estimate_pose_from_orb(kp1, des1, kp2, des2, K):
     E, inliers = ransac_essential(pts1, pts2, K)
     R, t = decompose_essential(E, pts1[inliers], pts2[inliers], K)
     return R, t
+
+
+def estimate_pose_from_orb_with_inliers(
+    kp1,
+    des1,
+    kp2,
+    des2,
+    K,
+    ransac_threshold: float = 0.01,
+    min_matches: int = 15,
+):
+    """Estimate camera pose and return R,t plus inlier diagnostics."""
+    matches = match_orb_descriptors(des1, des2)
+    if len(matches) < min_matches:
+        raise RuntimeError("too few matches")
+
+    pts1 = np.float32([kp1[i].pt for i, _ in matches])
+    pts2 = np.float32([kp2[j].pt for _, j in matches])
+
+    E, inliers = ransac_essential(pts1, pts2, K, th=ransac_threshold)
+    R, t = decompose_essential(E, pts1[inliers], pts2[inliers], K)
+    return R, t, inliers, len(matches)
 
 
 # ---------------------  (optional) essential matrix variant  --------------- #
