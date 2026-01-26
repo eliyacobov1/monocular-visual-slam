@@ -15,7 +15,7 @@ import numpy as np
 
 from slam_path_estimator import VehiclePathLiveAnimator
 from loop_closure import BoWDatabase
-from pose_graph import PoseGraph3D
+from pose_graph import PoseGraph3D, PoseGraphSim3D
 from homography import (
     estimate_homography_from_orb,
     estimate_homography_from_orb_with_inliers,
@@ -209,6 +209,8 @@ class SLAMRunConfig:
     loop_min_inlier_ratio: float = 0.3
     loop_ransac_threshold: float = 0.01
     loop_edge_weight: float = 0.5
+    use_sim3_loop_correction: bool = False
+    loop_scale_min_translation: float = 1e-3
 
 
 @dataclass(frozen=True)
@@ -397,11 +399,29 @@ def evaluate_kitti_trajectory(
     return compute_additional_metrics(gt_xy, est_xy)
 
 
+def estimate_loop_scale(
+    pose_i: np.ndarray,
+    pose_j: np.ndarray,
+    t_measured: np.ndarray,
+    min_translation: float,
+) -> float:
+    """Estimate a loop-closure scale factor using current pose estimates."""
+    Tij = np.linalg.inv(pose_i) @ pose_j
+    t_est = Tij[:3, 3]
+    norm_est = float(np.linalg.norm(t_est))
+    norm_meas = float(np.linalg.norm(t_measured))
+    if norm_est < min_translation or norm_meas < min_translation:
+        return 1.0
+    return norm_est / norm_meas
+
+
 def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMResult:
     """Run the SLAM pipeline and optionally compute KITTI metrics."""
     path_estimator = VehiclePathLiveAnimator()
     bow_db = BoWDatabase()
-    pose_graph = PoseGraph3D()
+    pose_graph = (
+        PoseGraphSim3D() if run_config.use_sim3_loop_correction else PoseGraph3D()
+    )
     keyframe_manager = KeyframeManager()
 
     frames_iter = iter(slam_input.frames)
@@ -545,13 +565,34 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
                     logging.warning("Fallback loop closure failed: %s", exc2)
                     R_loop = t_loop = None
             if R_loop is not None:
-                pose_graph.add_loop(
-                    loop_id,
-                    frame_id,
-                    R_loop,
-                    t_loop,
-                    weight=run_config.loop_edge_weight,
-                )
+                if run_config.use_sim3_loop_correction:
+                    loop_scale = estimate_loop_scale(
+                        pose_graph.poses[loop_id],
+                        pose_graph.poses[frame_id],
+                        t_loop,
+                        run_config.loop_scale_min_translation,
+                    )
+                    pose_graph.add_loop(
+                        loop_id,
+                        frame_id,
+                        R_loop,
+                        t_loop,
+                        loop_scale,
+                        weight=run_config.loop_edge_weight,
+                    )
+                    logging.info(
+                        "Loop scale estimate: frame=%d scale=%.3f",
+                        loop_id,
+                        loop_scale,
+                    )
+                else:
+                    pose_graph.add_loop(
+                        loop_id,
+                        frame_id,
+                        R_loop,
+                        t_loop,
+                        weight=run_config.loop_edge_weight,
+                    )
                 path_estimator.add_loop_edge(loop_id, frame_id)
                 optimized = pose_graph.optimize()
                 path_estimator.set_optimized_poses(optimized)
@@ -704,6 +745,17 @@ def main() -> None:
         default=0.5,
         help="Pose-graph weight for accepted loop edges",
     )
+    parser.add_argument(
+        "--use_sim3_loop_correction",
+        action="store_true",
+        help="Enable Sim(3) pose-graph optimization for scale-drift correction",
+    )
+    parser.add_argument(
+        "--loop_scale_min_translation",
+        type=float,
+        default=1e-3,
+        help="Minimum translation norm for estimating loop scale",
+    )
     args = parser.parse_args()
 
     _init_logging(args.log_level)
@@ -721,6 +773,8 @@ def main() -> None:
         loop_min_inlier_ratio=args.loop_min_inlier_ratio,
         loop_ransac_threshold=args.loop_ransac_threshold,
         loop_edge_weight=args.loop_edge_weight,
+        use_sim3_loop_correction=args.use_sim3_loop_correction,
+        loop_scale_min_translation=args.loop_scale_min_translation,
     )
 
     if args.kitti_base_dir:
