@@ -12,29 +12,34 @@ acceleration follow once accuracy targets are met.
   JSON/CSV reporting and config hashing for traceability.
 - **Keyframe management + local bundle adjustment**: introduced a keyframe
   selection policy and a sliding-window BA to improve short-term pose stability.
+- **Loop-closure verification + robust constraints** (commit `dbbd4ee`): added
+  geometric checks (PnP/essential-matrix verification) and robust loop edges to
+  improve global trajectory consistency.
+- **Scale-drift correction via Sim(3) pose-graph mode**: added a Sim(3)-aware
+  pose graph, loop-closure scale estimation, and configuration toggles to
+  correct monocular scale drift.
 
 ## Next task decision (Accuracy + KITTI)
-**Decision**: implement **geometric loop-closure verification + robust loop
-constraints** before expanding feature pipelines.
+**Decision**: implement **feature/motion upgrades with adaptive outlier
+rejection** before expanding datasets or multi-sensor support.
 
 **Rationale**
-- The current BoW loop detection does not enforce geometric consistency, which
-  can introduce incorrect loop edges and degrade global trajectory accuracy.
-- Adding verification (PnP + RANSAC or essential-matrix checks) plus robust
-  constraint handling in the pose graph directly targets KITTI evaluation
-  robustness without changing the feature pipeline.
+- The current ORB-based pipeline is robust but limited on challenging KITTI
+  scenes with low texture, motion blur, or repetitive structure.
+- A stronger feature/matcher interface with configurable outlier rejection
+  directly improves pose estimation quality without changing downstream modules.
 
 **Deliverables**
-- Geometric verification stage for loop candidates (PnP + RANSAC or essential
-  matrix checks) with clear acceptance thresholds and per-candidate diagnostics.
-- Loop-closure constraints added only after verification passes, with a robust
-  loss or switchable constraints to downweight residual outliers.
-- Evaluation harness updates to record loop-closure impact on KITTI ATE/RPE and
-  persist per-run metadata (including verification stats).
+- Pluggable feature/matcher interface supporting ORB plus stronger alternatives
+  (e.g., SuperPoint/SuperGlue) behind a consistent API.
+- Adaptive RANSAC thresholds or robust loss options for pose estimation, with
+  config-driven tuning for KITTI sequences.
+- Evaluation harness updates to record feature pipeline selection and outlier
+  rejection settings alongside ATE/RPE.
 
 **Follow-on task**
-- **Scale handling**: add a Sim(3)-aware pose-graph mode or a scale-drift
-  correction module that can align sub-trajectories on KITTI sequences.
+- **Scale handling**: explore scene constraints, motion priors, or learned scale
+  hints to further reduce monocular drift on long KITTI sequences.
 
 ## Near-term (Accuracy + KITTI)
 - **Better feature/motion estimation**:
@@ -85,3 +90,7 @@ constraints** before expanding feature pipelines.
 - **Map representation**: persist sparse map points and metadata for reuse.
 - **Failure diagnostics**: debug visualizations for matches, epipolar errors,
   and loop closure verification.
+
+## Decision inputs
+- `git log --oneline -n 20` to confirm recent completion of loop-closure
+  verification work (commit `dbbd4ee`).

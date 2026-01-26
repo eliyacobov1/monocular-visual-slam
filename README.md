@@ -8,7 +8,8 @@ compact yet complete and features:
   features, estimates motion using a RANSAC‑robust essential matrix and visualises
   the trajectory with `VehiclePathLiveAnimator`.
 * **Pose‑graph optimisation** – the `pose_graph.py` module maintains a graph of
-  camera poses and refines it when loops are detected.
+  camera poses and refines it when loops are detected, with optional Sim(3)
+  support for scale-drift correction.
 * **Loop closure detection** – `loop_closure.py` implements a simple BoW
   database for recognising previously seen locations.
 * **Local bundle adjustment** – keyframes are selected and refined with a
@@ -54,6 +55,8 @@ Useful flags:
 * `--intrinsics_file path` – load calibrated intrinsics (`fx fy cx cy`) from a text file.
 * `--loop_min_matches/--loop_min_inliers/--loop_min_inlier_ratio` – tune geometric
   verification thresholds for accepting loop candidates.
+* `--use_sim3_loop_correction` – enable Sim(3) pose-graph optimisation to help
+  correct monocular scale drift.
 
 ## Interactive viewer
 
