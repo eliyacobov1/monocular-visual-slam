@@ -74,13 +74,16 @@ def run_bundle_adjustment(
     if any(obs.frame_index < 0 or obs.frame_index >= num_poses for obs in obs_list):
         raise ValueError("Observations reference poses outside the provided window")
 
+    num_points = points_3d.shape[0]
+    if any(obs.point_index < 0 or obs.point_index >= num_points for obs in obs_list):
+        raise ValueError("Observations reference points outside the provided set")
+
     pose_vecs = [_pose_to_vec(pose) for pose in poses[1:]]
     pose_params = np.concatenate(pose_vecs) if pose_vecs else np.empty(0)
     points_params = points_3d.ravel()
     x0 = np.hstack([pose_params, points_params])
 
     num_opt_poses = len(poses) - 1
-    num_points = points_3d.shape[0]
 
     def residuals(x: np.ndarray) -> np.ndarray:
         pose_vecs = x[: num_opt_poses * 6].reshape(num_opt_poses, 6)
