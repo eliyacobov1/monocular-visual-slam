@@ -129,7 +129,6 @@ class KittiSequence:
         )
 
     def _resolve_image_dir(self) -> Path:
-        candidates = []
         camera_aliases = {
             "image_0": ["image_0", "image_00"],
             "image_1": ["image_1", "image_01"],
@@ -138,14 +137,12 @@ class KittiSequence:
         }
         aliases = camera_aliases.get(self.camera, [self.camera])
         for alias in aliases:
-            candidates.append(self.sequence_path / alias)
-            candidates.append(self.sequence_path / alias / "data")
-
-        for path in candidates:
-            if not path.exists():
-                continue
-            if any(path.glob("*.png")):
-                return path
+            base_path = self.sequence_path / alias
+            data_path = base_path / "data"
+            if data_path.exists() and any(data_path.glob("*.png")):
+                return data_path
+            if base_path.exists() and any(base_path.glob("*.png")):
+                return base_path
         raise FileNotFoundError(
             f"No image directory found for camera {self.camera} in {self.sequence_path}"
         )
