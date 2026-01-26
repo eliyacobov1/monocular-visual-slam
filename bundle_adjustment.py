@@ -66,19 +66,27 @@ def run_bundle_adjustment(
     if not obs_list:
         raise ValueError("No observations provided for bundle adjustment")
 
-    pose_params = np.concatenate([_pose_to_vec(pose) for pose in poses])
+    if len(poses) < 1:
+        raise ValueError("At least one pose is required for bundle adjustment")
+
+    fixed_pose = poses[0]
+    pose_params = np.concatenate([_pose_to_vec(pose) for pose in poses[1:]])
     points_params = points_3d.ravel()
     x0 = np.hstack([pose_params, points_params])
 
     num_poses = len(poses)
+    num_opt_poses = len(poses) - 1
     num_points = points_3d.shape[0]
 
     def residuals(x: np.ndarray) -> np.ndarray:
-        pose_vecs = x[: num_poses * 6].reshape(num_poses, 6)
-        pts = x[num_poses * 6 :].reshape(num_points, 3)
+        pose_vecs = x[: num_opt_poses * 6].reshape(num_opt_poses, 6)
+        pts = x[num_opt_poses * 6 :].reshape(num_points, 3)
         res = []
         for obs in obs_list:
-            pose = _vec_to_pose(pose_vecs[obs.frame_index])
+            if obs.frame_index == 0:
+                pose = fixed_pose
+            else:
+                pose = _vec_to_pose(pose_vecs[obs.frame_index - 1])
             cam_pose = np.linalg.inv(pose)
             point = pts[obs.point_index]
             proj = intrinsics @ (cam_pose[:3, :3] @ point + cam_pose[:3, 3])
@@ -87,7 +95,8 @@ def run_bundle_adjustment(
         return np.array(res)
 
     result = least_squares(residuals, x0, loss="huber", f_scale=1.0, max_nfev=max_nfev)
-    optimized_pose_vecs = result.x[: num_poses * 6].reshape(num_poses, 6)
-    optimized_points = result.x[num_poses * 6 :].reshape(num_points, 3)
-    optimized_poses = [_vec_to_pose(vec) for vec in optimized_pose_vecs]
+    optimized_pose_vecs = result.x[: num_opt_poses * 6].reshape(num_opt_poses, 6)
+    optimized_points = result.x[num_opt_poses * 6 :].reshape(num_points, 3)
+    optimized_poses = [fixed_pose]
+    optimized_poses.extend([_vec_to_pose(vec) for vec in optimized_pose_vecs])
     return optimized_poses, optimized_points
