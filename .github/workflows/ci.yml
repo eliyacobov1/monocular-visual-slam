@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_video_tests:
+        description: "Run optional video tests"
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      MPLBACKEND: Agg
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Cache test videos
+        uses: actions/cache@v4
+        with:
+          path: .cache/videos
+          key: ${{ runner.os }}-videos-v1
+
+      - name: Run tests
+        run: |
+          pytest -q
+
+  video-tests:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_video_tests)
+    runs-on: ubuntu-latest
+    env:
+      MPLBACKEND: Agg
+      RUN_DASHCAM_TEST: "1"
+      RUN_NVIDIA_VIDEO_TEST: "1"
+      VIDEO_CACHE_DIR: .cache/videos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Cache test videos
+        uses: actions/cache@v4
+        with:
+          path: .cache/videos
+          key: ${{ runner.os }}-videos-v1
+
+      - name: Run tests
+        run: |
+          pytest -q
