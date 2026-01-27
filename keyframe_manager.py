@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 import cv2
 import numpy as np
@@ -33,12 +33,14 @@ class KeyframeManager:
         min_rotation_deg: float = 5.0,
         min_match_ratio: float = 0.25,
         min_matches: int = 60,
+        matcher: Callable[[np.ndarray, np.ndarray], list[cv2.DMatch]] | None = None,
     ) -> None:
         self.window_size = window_size
         self.min_translation = min_translation
         self.min_rotation_deg = min_rotation_deg
         self.min_match_ratio = min_match_ratio
         self.min_matches = min_matches
+        self.matcher = matcher
         self.keyframes: list[Keyframe] = []
 
     def add_keyframe(
@@ -106,8 +108,8 @@ class KeyframeManager:
     def _match_ratio(self, desc_a: np.ndarray, desc_b: np.ndarray) -> float:
         if desc_a is None or desc_b is None or len(desc_a) == 0 or len(desc_b) == 0:
             return 0.0
-        matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        matches = matcher.match(desc_a, desc_b)
+        matcher = self.matcher or cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match
+        matches = matcher(desc_a, desc_b)
         return len(matches) / float(min(len(desc_a), len(desc_b)))
 
     def _build_window_observations(
@@ -121,7 +123,7 @@ class KeyframeManager:
         points = []
         observations: list[Observation] = []
         point_offset = 0
-        matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        matcher = self.matcher or cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match
         for idx in range(len(keyframes) - 1):
             kf_a = keyframes[idx]
             kf_b = keyframes[idx + 1]
@@ -132,7 +134,7 @@ class KeyframeManager:
                 or len(kf_b.descriptors) == 0
             ):
                 continue
-            matches = matcher.match(kf_a.descriptors, kf_b.descriptors)
+            matches = matcher(kf_a.descriptors, kf_b.descriptors)
             if len(matches) < self.min_matches:
                 continue
             matches = sorted(matches, key=lambda m: m.distance)[: self.min_matches]

@@ -19,13 +19,18 @@ from pose_graph import PoseGraph3D, PoseGraphSim3D
 from homography import (
     estimate_homography_from_orb,
     estimate_homography_from_orb_with_inliers,
-    estimate_pose_from_orb,
-    estimate_pose_from_orb_with_inliers,
+    estimate_pose_from_matches,
 )
 from keyframe_manager import KeyframeManager
 from demo_utils import ensure_sample_video, DEFAULT_VIDEO_PATH
 from evaluate_trajectory import compute_additional_metrics
 from cam_intrinsics_estimation import make_K, load_K_from_file
+from feature_pipeline import (
+    FeaturePipelineConfig,
+    adaptive_ransac_threshold,
+    build_feature_pipeline,
+    matches_to_points,
+)
 
 
 def estimate_pose_optical_flow(prev_img: np.ndarray, curr_img: np.ndarray,
@@ -211,6 +216,16 @@ class SLAMRunConfig:
     loop_edge_weight: float = 0.5
     use_sim3_loop_correction: bool = False
     loop_scale_min_translation: float = 1e-3
+    feature_type: str = "orb"
+    feature_nfeatures: int = 2000
+    match_ratio: float = 0.8
+    match_cross_check: bool = True
+    match_max_matches: int | None = 500
+    motion_min_matches: int = 15
+    motion_ransac_threshold: float = 0.01
+    adaptive_ransac: bool = False
+    adaptive_ransac_min: float = 0.005
+    adaptive_ransac_max: float = 0.03
 
 
 @dataclass(frozen=True)
@@ -422,7 +437,15 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
     pose_graph = (
         PoseGraphSim3D() if run_config.use_sim3_loop_correction else PoseGraph3D()
     )
-    keyframe_manager = KeyframeManager()
+    feature_config = FeaturePipelineConfig(
+        name=run_config.feature_type,
+        nfeatures=run_config.feature_nfeatures,
+        ratio_test=run_config.match_ratio,
+        cross_check=run_config.match_cross_check,
+        max_matches=run_config.match_max_matches,
+    )
+    feature_pipeline = build_feature_pipeline(feature_config)
+    keyframe_manager = KeyframeManager(matcher=feature_pipeline.match)
 
     frames_iter = iter(slam_input.frames)
     try:
@@ -432,10 +455,7 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
     prev_frame = cv2.cvtColor(first_frame, cv2.COLOR_RGB2GRAY)
     frame_id = 0
 
-    cv2_orb_detector: FeatureDetector_t = (
-        lambda img: cv2.ORB_create().detectAndCompute(img, None)
-    )
-    prev_keypoints, prev_desc = orb_detect(prev_frame, cv2_orb_detector)
+    prev_keypoints, prev_desc = feature_pipeline.detect_and_describe(prev_frame)
     bow_db.add_frame(frame_id, prev_desc)
     frames_data = {frame_id: (prev_frame, prev_keypoints, prev_desc)}
     pose_graph.add_pose(np.eye(3), np.zeros(3))
@@ -445,7 +465,7 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
         frame_id += 1
         curr_img = cv2.cvtColor(color_frame, cv2.COLOR_RGB2GRAY)
         prev_img = prev_frame
-        curr_keypoints, curr_desc = orb_detect(curr_img, cv2_orb_detector)
+        curr_keypoints, curr_desc = feature_pipeline.detect_and_describe(curr_img)
         mask = (
             compute_dynamic_mask(prev_img, curr_img)
             if run_config.semantic_masking
@@ -472,14 +492,35 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
         except Exception as exc:
             logging.warning("Optical flow pose failed: %s", exc)
             try:
-                R, t = estimate_pose_from_orb(
+                matches = feature_pipeline.match(prev_desc_filt, curr_desc)
+                ransac_threshold = run_config.motion_ransac_threshold
+                if run_config.adaptive_ransac:
+                    pts_prev, pts_curr = matches_to_points(
+                        prev_keypoints_filt, curr_keypoints, matches
+                    )
+                    ransac_threshold = adaptive_ransac_threshold(
+                        pts_prev,
+                        pts_curr,
+                        run_config.motion_ransac_threshold,
+                        run_config.adaptive_ransac_min,
+                        run_config.adaptive_ransac_max,
+                    )
+                R, t, inliers, match_count = estimate_pose_from_matches(
                     prev_keypoints_filt,
-                    prev_desc_filt,
                     curr_keypoints,
-                    curr_desc,
+                    matches,
                     slam_input.intrinsics,
+                    ransac_threshold=ransac_threshold,
+                    min_matches=run_config.motion_min_matches,
                 )
-                logging.debug("Fallback ORB pose used")
+                stats = feature_pipeline.match_stats(matches)
+                logging.debug(
+                    "Feature pose used matches=%d inliers=%d median_dist=%.2f ransac=%.4f",
+                    match_count,
+                    len(inliers),
+                    stats.median_distance,
+                    ransac_threshold,
+                )
             except Exception as exc2:
                 logging.warning("Pose estimation failed: %s", exc2)
                 try:
@@ -517,13 +558,25 @@ def run_visual_slam(slam_input: SLAMInput, run_config: SLAMRunConfig) -> SLAMRes
         if loop_id is not None and loop_id in frames_data:
             _, loop_kp, loop_desc = frames_data[loop_id]
             try:
-                R_loop, t_loop, inliers, match_count = estimate_pose_from_orb_with_inliers(
+                loop_matches = feature_pipeline.match(loop_desc, curr_desc)
+                loop_ransac = run_config.loop_ransac_threshold
+                if run_config.adaptive_ransac:
+                    pts_loop, pts_curr = matches_to_points(
+                        loop_kp, curr_keypoints, loop_matches
+                    )
+                    loop_ransac = adaptive_ransac_threshold(
+                        pts_loop,
+                        pts_curr,
+                        run_config.loop_ransac_threshold,
+                        run_config.adaptive_ransac_min,
+                        run_config.adaptive_ransac_max,
+                    )
+                R_loop, t_loop, inliers, match_count = estimate_pose_from_matches(
                     loop_kp,
-                    loop_desc,
                     curr_keypoints,
-                    curr_desc,
+                    loop_matches,
                     slam_input.intrinsics,
-                    ransac_threshold=run_config.loop_ransac_threshold,
+                    ransac_threshold=loop_ransac,
                     min_matches=run_config.loop_min_matches,
                 )
                 inlier_count = len(inliers)
@@ -642,6 +695,7 @@ def run_kitti_test(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Offline visual SLAM demo")
+    parser.set_defaults(match_cross_check=True, adaptive_ransac=False)
     parser.add_argument(
         "--video",
         default=os.environ.get("SAMPLE_VIDEO_PATH", SAMPLE_VIDEO_PATH),
@@ -716,6 +770,70 @@ def main() -> None:
         default=None,
     )
     parser.add_argument(
+        "--feature_type",
+        default="orb",
+        help="Feature pipeline to use (default: orb)",
+    )
+    parser.add_argument(
+        "--feature_nfeatures",
+        type=int,
+        default=2000,
+        help="Number of features for the detector (default: 2000)",
+    )
+    parser.add_argument(
+        "--match_ratio",
+        type=float,
+        default=0.8,
+        help="Lowe ratio threshold when cross-check is disabled",
+    )
+    parser.add_argument(
+        "--match_cross_check",
+        dest="match_cross_check",
+        action="store_true",
+        help="Enable cross-check matching (default: True)",
+    )
+    parser.add_argument(
+        "--no_match_cross_check",
+        dest="match_cross_check",
+        action="store_false",
+        help="Disable cross-check matching (use ratio test instead)",
+    )
+    parser.add_argument(
+        "--match_max_matches",
+        type=int,
+        default=500,
+        help="Maximum number of matches to keep (default: 500)",
+    )
+    parser.add_argument(
+        "--motion_min_matches",
+        type=int,
+        default=15,
+        help="Minimum matches required for motion estimation",
+    )
+    parser.add_argument(
+        "--motion_ransac_threshold",
+        type=float,
+        default=0.01,
+        help="Base RANSAC threshold for motion estimation",
+    )
+    parser.add_argument(
+        "--adaptive_ransac",
+        action="store_true",
+        help="Enable adaptive RANSAC thresholding",
+    )
+    parser.add_argument(
+        "--adaptive_ransac_min",
+        type=float,
+        default=0.005,
+        help="Minimum adaptive RANSAC threshold",
+    )
+    parser.add_argument(
+        "--adaptive_ransac_max",
+        type=float,
+        default=0.03,
+        help="Maximum adaptive RANSAC threshold",
+    )
+    parser.add_argument(
         "--loop_min_matches",
         type=int,
         default=30,
@@ -775,6 +893,16 @@ def main() -> None:
         loop_edge_weight=args.loop_edge_weight,
         use_sim3_loop_correction=args.use_sim3_loop_correction,
         loop_scale_min_translation=args.loop_scale_min_translation,
+        feature_type=args.feature_type,
+        feature_nfeatures=args.feature_nfeatures,
+        match_ratio=args.match_ratio,
+        match_cross_check=args.match_cross_check,
+        match_max_matches=args.match_max_matches,
+        motion_min_matches=args.motion_min_matches,
+        motion_ransac_threshold=args.motion_ransac_threshold,
+        adaptive_ransac=args.adaptive_ransac,
+        adaptive_ransac_min=args.adaptive_ransac_min,
+        adaptive_ransac_max=args.adaptive_ransac_max,
     )
 
     if args.kitti_base_dir:

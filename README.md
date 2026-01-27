@@ -57,6 +57,10 @@ Useful flags:
   verification thresholds for accepting loop candidates.
 * `--use_sim3_loop_correction` – enable Sim(3) pose-graph optimisation to help
   correct monocular scale drift.
+* `--feature_type/--feature_nfeatures` – select the feature pipeline and number
+  of detector features (default: ORB with 2000 features).
+* `--adaptive_ransac` – enable adaptive RANSAC thresholds for motion/loop
+  estimation based on match displacement statistics.
 
 ## Interactive viewer
 

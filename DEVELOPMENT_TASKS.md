@@ -20,22 +20,28 @@ acceleration follow once accuracy targets are met.
   correct monocular scale drift.
 
 ## Next task decision (Accuracy + KITTI)
-**Decision**: implement **feature/motion upgrades with adaptive outlier
-rejection** before expanding datasets or multi-sensor support.
+**Decision**: build a **feature/motion estimation module** with a clean
+pluggable interface, adaptive outlier rejection, and KITTI-focused evaluation
+tracking before expanding datasets or multi-sensor support.
 
 **Rationale**
-- The current ORB-based pipeline is robust but limited on challenging KITTI
-  scenes with low texture, motion blur, or repetitive structure.
-- A stronger feature/matcher interface with configurable outlier rejection
-  directly improves pose estimation quality without changing downstream modules.
+- Recent work landed loop-closure verification and Sim(3) scale correction, so
+  the next biggest accuracy lever is improving front-end correspondences.
+- The current ORB-only stack struggles on low-texture/motion-blur KITTI frames;
+  a stronger matcher plus robust motion estimation should improve baseline pose
+  quality without altering the back end.
+- Establishing a stable front-end interface now keeps the system ready for
+  multi-camera and learned features later on.
 
 **Deliverables**
-- Pluggable feature/matcher interface supporting ORB plus stronger alternatives
-  (e.g., SuperPoint/SuperGlue) behind a consistent API.
-- Adaptive RANSAC thresholds or robust loss options for pose estimation, with
-  config-driven tuning for KITTI sequences.
-- Evaluation harness updates to record feature pipeline selection and outlier
-  rejection settings alongside ATE/RPE.
+- A `FeaturePipeline` interface (detector + descriptor + matcher) with ORB as
+  the default and a hook for learned options (e.g., SuperPoint/SuperGlue).
+- Adaptive RANSAC thresholds or robust loss options (Huber/Cauchy) for
+  essential-matrix or PnP estimation, exposed in config for per-sequence tuning.
+- Evaluation harness logs that persist feature pipeline selection, outlier
+  rejection configuration, and match statistics alongside ATE/RPE.
+- Deterministic seeding and caching for feature extraction to keep benchmarks
+  reproducible across KITTI runs.
 
 **Follow-on task**
 - **Scale handling**: explore scene constraints, motion priors, or learned scale
@@ -80,7 +86,9 @@ rejection** before expanding datasets or multi-sensor support.
 - **CI & tests**: add unit tests for geometry utilities and integration tests
   for short sequences.
 - **Regression tracking**: store evaluation metrics to compare changes over
-  time.
+  time, and add a lightweight regression gate for KITTI/TUM baselines.
+- **Dataset integrity checks**: add a validation command to verify dataset
+  layout, calibration files, and timestamp alignment before running pipelines.
 - **Documentation**: improve dataset setup instructions and provide a quickstart
   for KITTI evaluation.
 
