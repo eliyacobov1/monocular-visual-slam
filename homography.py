@@ -420,6 +420,24 @@ def estimate_pose_from_orb_with_inliers(
     return R, t, inliers, len(matches)
 
 
+def estimate_pose_from_matches(
+    kp1,
+    kp2,
+    matches,
+    K,
+    ransac_threshold: float = 0.01,
+    min_matches: int = 15,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Estimate camera pose from provided matches and return inliers."""
+    if len(matches) < min_matches:
+        raise RuntimeError("too few matches")
+    pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
+    pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+    E, inliers = ransac_essential(pts1, pts2, K, th=ransac_threshold)
+    R, t = decompose_essential(E, pts1[inliers], pts2[inliers], K)
+    return R, t, inliers, len(matches)
+
+
 # ---------------------  (optional) essential matrix variant  --------------- #
 """
 If the road is NOT perfectly planar, replace the call above with:
