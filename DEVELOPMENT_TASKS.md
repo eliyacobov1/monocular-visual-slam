@@ -18,40 +18,50 @@ acceleration follow once accuracy targets are met.
 - **Scale-drift correction via Sim(3) pose-graph mode**: added a Sim(3)-aware
   pose graph, loop-closure scale estimation, and configuration toggles to
   correct monocular scale drift.
+- **Pluggable feature pipeline + adaptive RANSAC** (commit `8b1313a`): added a
+  feature/motion interface with ORB defaults, match statistics, and adaptive
+  RANSAC thresholds.
 
 ## Next task decision (Accuracy + KITTI)
-**Decision**: build a **feature/motion estimation module** with a clean
-pluggable interface, adaptive outlier rejection, and KITTI-focused evaluation
-tracking before expanding datasets or multi-sensor support.
+**Decision**: deliver a **dataset integrity + experiment registry layer** that
+validates KITTI/TUM inputs, standardizes pipeline configs, and captures
+reproducible run artifacts to enable reliable accuracy iteration.
 
 **Rationale**
-- Recent work landed loop-closure verification and Sim(3) scale correction, so
-  the next biggest accuracy lever is improving front-end correspondences.
-- The current ORB-only stack struggles on low-texture/motion-blur KITTI frames;
-  a stronger matcher plus robust motion estimation should improve baseline pose
-  quality without altering the back end.
-- Establishing a stable front-end interface now keeps the system ready for
-  multi-camera and learned features later on.
+- The front-end feature pipeline is now modular and adaptive, so the next
+  biggest risk to accuracy is inconsistent datasets, mis-specified calibration,
+  and missing run provenance.
+- Production-grade evaluation requires deterministic inputs and traceable
+  outputs; a validation + registry layer unlocks reliable regression tracking
+  for KITTI sequences and future multi-sensor extensions.
+- Standardized experiment configs keep the codebase ready for multi-camera and
+  sensor fusion without rewriting run management later.
 
 **Deliverables**
-- A `FeaturePipeline` interface (detector + descriptor + matcher) with ORB as
-  the default and a hook for learned options (e.g., SuperPoint/SuperGlue).
-- Adaptive RANSAC thresholds or robust loss options (Huber/Cauchy) for
-  essential-matrix or PnP estimation, exposed in config for per-sequence tuning.
-- Evaluation harness logs that persist feature pipeline selection, outlier
-  rejection configuration, and match statistics alongside ATE/RPE.
-- Deterministic seeding and caching for feature extraction to keep benchmarks
-  reproducible across KITTI runs.
+- A dataset validation CLI that checks KITTI/TUM layout, calibration files,
+  timestamp alignment, and frame integrity before pipeline runs.
+- A unified experiment config schema (pipeline + evaluation) that seeds
+  randomness, captures feature/motion settings, and stores resolved parameters.
+- Run artifact registry that writes structured logs, metrics, and config hashes
+  to a per-run directory with a unique run ID.
+- A lightweight regression baseline store (JSON/CSV) to compare new runs
+  against known-good KITTI/TUM results.
 
 **Follow-on task**
 - **Scale handling**: explore scene constraints, motion priors, or learned scale
   hints to further reduce monocular drift on long KITTI sequences.
 
 ## Near-term (Accuracy + KITTI)
+- **Dataset integrity + run provenance**:
+  - Add a dataset validation command for KITTI and TUM with clear error
+    reporting and suggested fixes.
+  - Capture per-run metadata (config hash, feature pipeline, calibration) in a
+    deterministic run artifact directory.
 - **Better feature/motion estimation**:
   - Evaluate alternative feature pipelines (e.g., SuperPoint + SuperGlue) behind
     an interface that still supports ORB.
-  - Improve outlier rejection (adaptive RANSAC thresholds, robust loss).
+  - Add match-quality diagnostics (inlier ratio, reprojection stats) to improve
+    front-end tuning.
 - **Scale handling**: research strategies for monocular scale drift
   compensation (scene constraints, motion priors, or learning-based scale hints).
 - **Trajectory evaluation**: standardize ATE/RPE output for KITTI with a clear

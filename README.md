@@ -158,6 +158,19 @@ Each run writes `summary.json`/`summary.csv` and per-sequence reports under the
 configured `output_dir`, along with a plain-text metrics file for quick review.
 The summary now includes the evaluation config path and a SHA-256 hash of the
 config file to make runs reproducible and easier to compare over time.
+Set `use_run_subdir` to `true` in the evaluation config to write run artifacts
+to a timestamped subdirectory and generate a `run_metadata.json` file for
+provenance tracking.
+
+## Dataset validation
+
+Use `dataset_validation.py` to sanity-check KITTI and TUM layouts before
+running pipelines:
+
+```bash
+python dataset_validation.py --dataset kitti --root /data/kitti --sequence 00
+python dataset_validation.py --dataset tum --root /data/tum/rgbd_dataset_freiburg1_xyz
+```
 
 ## KITTI odometry sequences
 
