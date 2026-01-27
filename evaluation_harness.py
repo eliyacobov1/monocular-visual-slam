@@ -15,6 +15,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from experiment_registry import create_run_artifacts
 from evaluate_trajectory import (
     build_report_payload,
     compute_additional_metrics,
@@ -45,6 +46,7 @@ class EvaluationConfig:
     dataset: str
     output_dir: Path
     seed: int
+    use_run_subdir: bool
     trajectories: tuple[TrajectoryEntry, ...]
     config_path: Path
     config_hash: str
@@ -126,6 +128,7 @@ def load_config(config_path: Path) -> EvaluationConfig:
     dataset = raw.get("dataset", "custom")
     output_dir = _resolve_path(raw.get("output_dir", "reports"), base_dir)
     seed = int(raw.get("seed", 0))
+    use_run_subdir = bool(raw.get("use_run_subdir", False))
 
     trajectories_data = raw.get("trajectories")
     if trajectories_data is None and dataset.lower() == "kitti":
@@ -144,6 +147,7 @@ def load_config(config_path: Path) -> EvaluationConfig:
         dataset=str(dataset),
         output_dir=output_dir,
         seed=seed,
+        use_run_subdir=use_run_subdir,
         trajectories=trajectories,
         config_path=config_path,
         config_hash=config_hash,
@@ -192,8 +196,14 @@ def _write_summary_csv(path: Path, per_sequence: dict[str, dict[str, float]], ag
 
 def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
     _set_deterministic_seed(config.seed)
-    output_dir = config.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = create_run_artifacts(
+        config.output_dir,
+        config.run_id,
+        config.config_path,
+        config.config_hash,
+        config.use_run_subdir,
+    )
+    output_dir = artifacts.run_dir
 
     per_sequence_metrics: dict[str, dict[str, float]] = {}
     per_sequence_reports: dict[str, dict[str, Any]] = {}
@@ -219,6 +229,8 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         "timestamp": _timestamp(),
         "config_path": str(config.config_path),
         "config_hash": config.config_hash,
+        "run_dir": str(output_dir),
+        "run_metadata": str(artifacts.metadata_path),
         "aggregate_metrics": aggregate,
         "per_sequence": per_sequence_reports,
     }

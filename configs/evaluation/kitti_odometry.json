@@ -3,6 +3,7 @@
   "dataset": "kitti",
   "seed": 7,
   "output_dir": "reports/kitti_odometry",
+  "use_run_subdir": true,
   "kitti_root": "/data/kitti",
   "gt_root": "/data/kitti/poses",
   "est_root": "outputs/poses",
