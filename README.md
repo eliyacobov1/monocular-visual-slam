@@ -80,6 +80,18 @@ Useful options:
 
 The viewer requires `opencv-python` and `matplotlib`.
 
+## SLAM dashboard (Next.js)
+
+The `frontend/` directory contains a Next.js 14 dashboard that visualizes homography matches, pose graphs, and optimization metrics streamed from the Python backend over WebSocket.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Set the WebSocket endpoint with `NEXT_PUBLIC_SLAM_WS_URL` if the backend is not running on `ws://localhost:8000/ws`.
+
 ## Benchmarking with the TUM RGB‑D dataset
 
 Download one of the TUM RGB‑D sequences from the official website or its
