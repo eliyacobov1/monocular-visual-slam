@@ -1,88 +1,80 @@
-# Visual SLAM Pipeline
+# Monocular Visual SLAM (Python)
 
-This repository implements a Python based **visual SLAM** pipeline capable of
-estimating camera trajectories from a video sequence. The implementation is
-compact yet complete and features:
+A **monocular, sparse, feature-based SLAM pipeline** built in Python for recovering
+camera trajectories from video streams. The system targets **accuracy-first
+benchmarking** on standard datasets (KITTI, TUM RGB-D) with loop closure and
+pose-graph optimization.
 
-* **Main entry point** – `visual_slam_offline_entry_point.py` extracts ORB
-  features, estimates motion using a RANSAC‑robust essential matrix and visualises
-  the trajectory with `VehiclePathLiveAnimator`.
-* **Pose‑graph optimisation** – the `pose_graph.py` module maintains a graph of
-  camera poses and refines it when loops are detected, with optional Sim(3)
-  support for scale-drift correction.
-* **Loop closure detection** – `loop_closure.py` implements a simple BoW
-  database for recognising previously seen locations.
-* **Local bundle adjustment** – keyframes are selected and refined with a
-  sliding-window BA to stabilise short-term trajectory estimates.
-* Additional helpers for essential‑matrix estimation and camera intrinsics.
+![Demo GIF](docs/media/demo.gif) <!-- [GIF/Image placeholder] -->
+![Trajectory Plot](docs/media/trajectory.png) <!-- [GIF/Image placeholder] -->
 
-## Repository structure
+## Key Features
 
-The most relevant modules are:
+- **Monocular tracking** with ORB features, robust matching, and RANSAC-based
+  essential matrix pose estimation.
+- **Adaptive RANSAC thresholds** for motion and loop verification.
+- **Keyframe selection** and **sliding-window local bundle adjustment** for
+  short-term trajectory refinement.
+- **Loop closure detection** via Bag-of-Words (BoW) place recognition with
+  geometric verification.
+- **Pose-graph optimization** in SE(3), with optional **Sim(3)** loop correction
+  to mitigate scale drift in monocular runs.
+- **Evaluation harness** for ATE/RPE on KITTI and TUM, plus dataset validation
+  helpers.
+- **Visualization** through Matplotlib live plots and an optional Next.js
+  dashboard.
 
-* `visual_slam_offline_entry_point.py` – main entry point running the pipeline
-* `pose_graph.py` – pose graph data structure and optimisation logic
-* `loop_closure.py` – simple BoW database for detecting revisited places
-* `homography.py` – feature-based geometry estimation utilities
-* `cam_intrinsics_estimation.py` – optional camera calibration helpers
+## System Architecture
 
-## Running the pipeline
+1. **Tracking / Front-End**
+   - ORB feature detection + matching (`feature_pipeline.py`).
+   - Motion estimation with essential matrix + `recoverPose` (`homography.py`).
+   - Incremental pose integration into the pose graph.
 
-The demos download a short example clip on first use.  Use the
-entry‑point script to process the video and display the recovered trajectory:
+2. **Local Mapping**
+   - Keyframe selection based on motion and match quality (`keyframe_manager.py`).
+   - 3D point triangulation and local bundle adjustment (`bundle_adjustment.py`).
 
-Install the Python dependencies first:
+3. **Loop Closing / Back-End**
+   - BoW place recognition for candidate loops (`loop_closure.py`).
+   - Geometric verification (essential matrix / homography) before acceptance.
+   - Pose-graph optimization with optional Sim(3) corrections (`pose_graph.py`).
+
+## Mathematical Foundation
+
+- **Rigid-body motion** on $SE(3)$ using 4×4 homogeneous transforms; rotations are
+  parameterized via Rodrigues vectors.
+- **Epipolar geometry**: essential matrix $E = [t]_\times R$ with RANSAC for
+  outlier rejection.
+- **Triangulation** and **reprojection error** minimization in local bundle
+  adjustment.
+- **Optimization backend**: SciPy `least_squares` (Huber / soft\_l1 losses) for
+  bundle adjustment and pose-graph refinement.
+
+## Tech Stack
+
+- **Language**: Python 3.x
+- **Core libraries**: OpenCV, NumPy, SciPy
+- **Loop closure**: scikit-learn (MiniBatchKMeans + cosine similarity)
+- **Visualization**: Matplotlib; optional Next.js 14 dashboard (`frontend/`)
+
+## Installation & Dependencies
 
 ```bash
+git clone <your-repo-url>
+cd monocular-visual-slam
+python -m venv .venv
+source .venv/bin/activate  # on Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt
 ```
 
+If you plan to use BoW loop closure, ensure scikit-learn is installed:
+
 ```bash
-python visual_slam_offline_entry_point.py
+python -m pip install scikit-learn
 ```
 
-The script loads frames from the given video, detects ORB keypoints and
-estimates camera motion between successive images using the essential matrix. Each transform is appended
-  to a pose graph and the current vehicle path is shown in a Matplotlib window.
-When the BoW database identifies a loop, the graph is optimised and the plot is
-updated with the refined trajectory.
-
-Useful flags:
-
-* `--max_frames N` – limit the number of processed frames.
-* `--semantic_masking` – mask dynamic regions before feature detection using a
-  simple frame‑difference algorithm.
-* `--intrinsics_file path` – load calibrated intrinsics (`fx fy cx cy`) from a text file.
-* `--loop_min_matches/--loop_min_inliers/--loop_min_inlier_ratio` – tune geometric
-  verification thresholds for accepting loop candidates.
-* `--use_sim3_loop_correction` – enable Sim(3) pose-graph optimisation to help
-  correct monocular scale drift.
-* `--feature_type/--feature_nfeatures` – select the feature pipeline and number
-  of detector features (default: ORB with 2000 features).
-* `--adaptive_ransac` – enable adaptive RANSAC thresholds for motion/loop
-  estimation based on match displacement statistics.
-
-## Interactive viewer
-
-The `slam_viewer.py` script provides a side-by-side interface that plays the input video while plotting the estimated trajectory. Matched feature points and basic pose diagnostics are drawn on top of each frame.
-
-
-Launch the viewer with:
-```bash
-python slam_viewer.py
-```
-
-Useful options:
-
-* `--step` – advance frames one-by-one.
-* `--show3d` – toggle a 3-D scatter of the path.
-* `--intrinsics_file` – supply camera intrinsics (`fx fy cx cy`).
-
-The viewer requires `opencv-python` and `matplotlib`.
-
-## SLAM dashboard (Next.js)
-
-The `frontend/` directory contains a Next.js 14 dashboard that visualizes homography matches, pose graphs, and optimization metrics streamed from the Python backend over WebSocket.
+Optional dashboard:
 
 ```bash
 cd frontend
@@ -90,139 +82,80 @@ npm install
 npm run dev
 ```
 
-Set the WebSocket endpoint with `NEXT_PUBLIC_SLAM_WS_URL` if the backend is not running on `ws://localhost:8000/ws`.
+Set `NEXT_PUBLIC_SLAM_WS_URL` if the backend is not running at
+`ws://localhost:8000/ws`.
 
-## Benchmarking with the TUM RGB‑D dataset
+## Dataset Usage
 
-Download one of the TUM RGB‑D sequences from the official website or its
-`cvg.cit.tum.de` mirror, e.g.
-
-```bash
-wget https://vision.in.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_xyz.tgz
-tar -xzf rgbd_dataset_freiburg1_xyz.tgz
-```
-
-If the server is unreachable due to network restrictions, copy the sequence from
-another machine and extract it locally.
-
-The dataset provides RGB images and a `groundtruth.txt` file. Convert the image
-sequence into a video before running the pipeline:
-The repository already includes `tum_freiburg1_intrinsics.txt` with the official
-camera parameters for these sequences. Pass this file to
-`visual_slam_offline_entry_point.py` via `--intrinsics_file` so that pose
-estimation uses accurate calibration.
+### Quick Demo (Bundled Video)
 
 ```bash
-ffmpeg -r 30 -i rgb/%04d.png tum_sequence.mp4
+python visual_slam_offline_entry_point.py
 ```
 
-Then process the video and save the estimated trajectory:
+The entry point will download a short demo clip if it is missing.
+
+### KITTI Odometry
+
+Validate the dataset layout:
 
 ```bash
-python visual_slam_offline_entry_point.py \
-    --video tum_sequence.mp4 \
-    --log_level INFO \
-    --sleep_time 0 \
-    --pause_time 0 \
-    --intrinsics_file tum_freiburg1_intrinsics.txt \
-    --save_poses estimated.txt
+python dataset_validation.py --dataset kitti --root /data/kitti --sequence 00
 ```
 
-Only the RGB images are used – depth values are ignored.  When evaluating,
-specify the ground truth columns that hold the x and y coordinates:
-
-With both `groundtruth.txt` and `estimated.txt` in place, run
-`evaluate_trajectory.py` to compute Absolute Trajectory Error (ATE) and Relative
-Pose Error (RPE):
-
-```bash
-python evaluate_trajectory.py --gt groundtruth.txt --est estimated.txt \
-    --rpe_delta 5 \
-    --cols 1,2 \
-    --est_cols 0,1 \
-    --report metrics.txt
-```
-The script prints summary statistics for both metrics. When `--report` is
-given the results are also written to the specified file. Using the updated
-OpenCV‑based pose estimation and similarity aligned evaluation we tested the
-pipeline on a short synthetic translation clip.
-
-## Configuration-driven evaluation harness
-
-To make metrics reproducible across runs, the repository now includes a
-configuration-driven evaluation harness that emits per-sequence JSON/CSV
-artifacts plus an aggregated summary. Use the JSON configs under
-`configs/evaluation/` as starting points.
-
-For KITTI odometry:
+Run the evaluation harness (ATE/RPE):
 
 ```bash
 python evaluation_harness.py --config configs/evaluation/kitti_odometry.json
 ```
 
-For TUM RGB-D sequences:
+You can also use `kitti_dataset.py` directly to iterate frames and parse
+calibration.
+
+### TUM RGB-D (RGB Only)
+
+Download and extract a sequence, then convert RGB images to a video:
 
 ```bash
-python evaluation_harness.py --config configs/evaluation/tum_freiburg1.json
+ffmpeg -r 30 -i rgb/%04d.png tum_sequence.mp4
 ```
 
-Each run writes `summary.json`/`summary.csv` and per-sequence reports under the
-configured `output_dir`, along with a plain-text metrics file for quick review.
-The summary now includes the evaluation config path and a SHA-256 hash of the
-config file to make runs reproducible and easier to compare over time.
-Set `use_run_subdir` to `true` in the evaluation config to write run artifacts
-to a timestamped subdirectory and generate a `run_metadata.json` file for
-provenance tracking.
-
-## Dataset validation
-
-Use `dataset_validation.py` to sanity-check KITTI and TUM layouts before
-running pipelines:
+Run the pipeline and save the estimated trajectory:
 
 ```bash
-python dataset_validation.py --dataset kitti --root /data/kitti --sequence 00
-python dataset_validation.py --dataset tum --root /data/tum/rgbd_dataset_freiburg1_xyz
+python visual_slam_offline_entry_point.py \
+  --video tum_sequence.mp4 \
+  --intrinsics_file tum_freiburg1_intrinsics.txt \
+  --save_poses estimated.txt
 ```
 
-## KITTI odometry sequences
-
-For KITTI odometry, place the dataset under a root directory (either the
-official `sequences/00` style layout or a flat `00` directory). The
-`kitti_dataset.py` helper iterates over frames, parses calibration files, and
-uses `times.txt` for timestamps when available:
-
-```python
-from pathlib import Path
-from kitti_dataset import KittiSequence
-
-sequence = KittiSequence(Path("/data/kitti"), "00", camera="image_2")
-for frame in sequence.iter_frames():
-    print(frame.index, frame.path, frame.timestamp)
-print(sequence.camera_intrinsics())
-```
-
-For KITTI raw sequences, point the root at the dataset folder that contains the
-date subdirectory (for example `2011_09_26/`). The loader automatically finds
-the drive sequence, parses `image_02/timestamps.txt`, and reads calibration from
-the date-level `calib_cam_to_cam.txt` file:
-
-```python
-sequence = KittiSequence(Path("/data/kitti_raw"), "2011_09_26_drive_0001_sync", camera="image_02")
-for frame in sequence.iter_frames():
-    print(frame.index, frame.timestamp, frame.path)
-print(sequence.camera_intrinsics())
-```
-
-When evaluating KITTI trajectories, use the odometry format flag to extract
-translations from the 3x4 pose matrices. JSON and CSV reports are also
-available for reproducible benchmarks:
+Evaluate ATE/RPE against `groundtruth.txt`:
 
 ```bash
 python evaluate_trajectory.py \
-    --gt poses/00.txt \
-    --est estimated.txt \
-    --format kitti_odom \
-    --rpe_delta 5 \
-    --json_report kitti_metrics.json \
-    --csv_report kitti_metrics.csv
+  --gt groundtruth.txt \
+  --est estimated.txt \
+  --rpe_delta 5 \
+  --cols 1,2 \
+  --est_cols 0,1 \
+  --report metrics.txt
 ```
+
+## Performance & Evaluation
+
+The repository provides both a direct evaluator (`evaluate_trajectory.py`) and a
+configuration-driven harness (`evaluation_harness.py`) that emits JSON/CSV
+artifacts for reproducible benchmarks.
+
+**Results table (fill with your runs):**
+
+| Dataset | Sequence | ATE (m) | RPE (m) | Notes |
+| --- | --- | --- | --- | --- |
+| KITTI | 00 | TBD | TBD | [placeholder] |
+| TUM | freiburg1_xyz | TBD | TBD | [placeholder] |
+
+## License & Acknowledgments
+
+- **License**: Not specified yet (add a `LICENSE` file to formalize usage).
+- **Acknowledgments**: KITTI and TUM RGB-D datasets; OpenCV, NumPy, SciPy, and
+  scikit-learn.
