@@ -109,6 +109,39 @@ Run the evaluation harness (ATE/RPE):
 python evaluation_harness.py --config configs/evaluation/kitti_odometry.json
 ```
 
+You can also use a unified experiment config that captures run metadata,
+pipeline settings, and baseline regression checks in one file:
+
+```json
+{
+  "run": {
+    "run_id": "kitti_00_eval",
+    "dataset": "kitti",
+    "seed": 7,
+    "output_dir": "reports/kitti_odometry",
+    "use_run_subdir": true
+  },
+  "pipeline": {
+    "feature_type": "orb",
+    "motion_ransac_threshold": 0.01,
+    "adaptive_ransac": true
+  },
+  "baseline": {
+    "store_path": "reports/baselines.json",
+    "key": "kitti_00",
+    "thresholds": { "ate": 0.05, "rpe": 0.02 }
+  },
+  "evaluation": {
+    "kitti_root": "/data/kitti",
+    "gt_root": "/data/kitti/poses",
+    "est_root": "outputs/poses",
+    "sequences": ["00"],
+    "format": "kitti_odom",
+    "rpe_delta": 5
+  }
+}
+```
+
 You can also use `kitti_dataset.py` directly to iterate frames and parse
 calibration.
 

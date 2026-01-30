@@ -5,7 +5,9 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from experiment_registry import create_run_artifacts
+import json
+
+from experiment_registry import create_run_artifacts, write_resolved_config
 
 
 def test_create_run_artifacts_with_subdir(tmp_path: Path) -> None:
@@ -23,3 +25,13 @@ def test_create_run_artifacts_with_subdir(tmp_path: Path) -> None:
     assert artifacts.run_dir.exists()
     assert artifacts.metadata_path.exists()
     assert artifacts.run_id == "unit_test"
+
+
+def test_write_resolved_config(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    resolved = {"run_id": "unit_test", "dataset": "kitti"}
+    resolved_path = write_resolved_config(run_dir, resolved)
+
+    assert resolved_path.exists()
+    payload = json.loads(resolved_path.read_text(encoding="utf-8"))
+    assert payload["run_id"] == "unit_test"

@@ -15,7 +15,8 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from experiment_registry import create_run_artifacts
+from experiment_registry import create_run_artifacts, write_resolved_config
+from regression_baselines import compare_metrics, load_baseline_store, upsert_baseline
 from evaluate_trajectory import (
     build_report_payload,
     compute_additional_metrics,
@@ -50,6 +51,12 @@ class EvaluationConfig:
     trajectories: tuple[TrajectoryEntry, ...]
     config_path: Path
     config_hash: str
+    resolved_config: dict[str, Any]
+    pipeline_config: dict[str, Any] | None
+    baseline_store: Path | None
+    baseline_key: str | None
+    baseline_thresholds: dict[str, float] | None
+    write_baseline: bool
 
 
 def _timestamp() -> str:
@@ -90,6 +97,37 @@ def _build_entry_from_mapping(mapping: dict[str, Any], base_dir: Path) -> Trajec
     )
 
 
+def _normalize_config(raw: dict[str, Any]) -> dict[str, Any]:
+    if any(key in raw for key in ("run", "evaluation", "pipeline", "baseline")):
+        run_section = raw.get("run", {})
+        eval_section = raw.get("evaluation", {})
+        dataset = run_section.get(
+            "dataset",
+            raw.get("dataset", eval_section.get("dataset", "custom")),
+        )
+        output_dir = run_section.get("output_dir", raw.get("output_dir", "reports"))
+        seed = run_section.get("seed", raw.get("seed", 0))
+        run_id = run_section.get("run_id", raw.get("run_id"))
+        use_run_subdir = run_section.get(
+            "use_run_subdir",
+            raw.get("use_run_subdir", False),
+        )
+        merged = dict(eval_section)
+        merged.update(
+            {
+                "dataset": dataset,
+                "output_dir": output_dir,
+                "seed": seed,
+                "run_id": run_id,
+                "use_run_subdir": use_run_subdir,
+            }
+        )
+        merged["pipeline"] = raw.get("pipeline")
+        merged["baseline"] = raw.get("baseline")
+        return merged
+    return raw
+
+
 def _build_kitti_entries(config: dict[str, Any], base_dir: Path) -> list[TrajectoryEntry]:
     sequences = config.get("sequences")
     if not sequences:
@@ -122,17 +160,18 @@ def _build_kitti_entries(config: dict[str, Any], base_dir: Path) -> list[Traject
 def load_config(config_path: Path) -> EvaluationConfig:
     base_dir = config_path.parent
     raw = _load_json(config_path)
+    normalized = _normalize_config(raw)
     config_hash = _hash_config(config_path)
 
-    run_id = raw.get("run_id", config_path.stem)
-    dataset = raw.get("dataset", "custom")
-    output_dir = _resolve_path(raw.get("output_dir", "reports"), base_dir)
-    seed = int(raw.get("seed", 0))
-    use_run_subdir = bool(raw.get("use_run_subdir", False))
+    run_id = normalized.get("run_id", config_path.stem)
+    dataset = normalized.get("dataset", "custom")
+    output_dir = _resolve_path(normalized.get("output_dir", "reports"), base_dir)
+    seed = int(normalized.get("seed", 0))
+    use_run_subdir = bool(normalized.get("use_run_subdir", False))
 
-    trajectories_data = raw.get("trajectories")
+    trajectories_data = normalized.get("trajectories")
     if trajectories_data is None and dataset.lower() == "kitti":
-        trajectories = tuple(_build_kitti_entries(raw, base_dir))
+        trajectories = tuple(_build_kitti_entries(normalized, base_dir))
     elif trajectories_data:
         trajectories = tuple(
             _build_entry_from_mapping(entry, base_dir) for entry in trajectories_data
@@ -141,6 +180,39 @@ def load_config(config_path: Path) -> EvaluationConfig:
         raise ValueError(
             "Config must include 'trajectories' or specify dataset='kitti' with sequences"
         )
+
+    resolved_trajectories = [
+        {
+            "name": entry.name,
+            "gt_path": str(entry.gt_path),
+            "est_path": str(entry.est_path),
+            "format": entry.format,
+            "cols": entry.cols,
+            "est_cols": entry.est_cols,
+            "rpe_delta": entry.rpe_delta,
+        }
+        for entry in trajectories
+    ]
+    resolved_config = {
+        "run_id": run_id,
+        "dataset": dataset,
+        "output_dir": str(output_dir),
+        "seed": seed,
+        "use_run_subdir": use_run_subdir,
+        "trajectories": resolved_trajectories,
+        "config_hash": config_hash,
+    }
+    pipeline_config = normalized.get("pipeline")
+    if pipeline_config:
+        resolved_config["pipeline"] = pipeline_config
+    baseline_config = normalized.get("baseline") or {}
+    if baseline_config:
+        resolved_config["baseline"] = baseline_config
+
+    baseline_store = baseline_config.get("store_path") if baseline_config else None
+    baseline_key = baseline_config.get("key") if baseline_config else None
+    baseline_thresholds = baseline_config.get("thresholds") if baseline_config else None
+    write_baseline = bool(baseline_config.get("write", False)) if baseline_config else False
 
     return EvaluationConfig(
         run_id=run_id,
@@ -151,6 +223,12 @@ def load_config(config_path: Path) -> EvaluationConfig:
         trajectories=trajectories,
         config_path=config_path,
         config_hash=config_hash,
+        resolved_config=resolved_config,
+        pipeline_config=pipeline_config,
+        baseline_store=_resolve_path(baseline_store, base_dir) if baseline_store else None,
+        baseline_key=str(baseline_key) if baseline_key else None,
+        baseline_thresholds=baseline_thresholds,
+        write_baseline=write_baseline,
     )
 
 
@@ -204,6 +282,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         config.use_run_subdir,
     )
     output_dir = artifacts.run_dir
+    write_resolved_config(output_dir, config.resolved_config)
 
     per_sequence_metrics: dict[str, dict[str, float]] = {}
     per_sequence_reports: dict[str, dict[str, Any]] = {}
@@ -234,6 +313,42 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         "aggregate_metrics": aggregate,
         "per_sequence": per_sequence_reports,
     }
+
+    baseline_comparison = None
+    if config.baseline_store and config.baseline_key:
+        store = load_baseline_store(config.baseline_store)
+        baselines = store.get("baselines", {})
+        baseline = baselines.get(config.baseline_key)
+        if baseline:
+            comparison = compare_metrics(
+                config.baseline_key,
+                aggregate,
+                baseline,
+                config.baseline_thresholds,
+            )
+            baseline_comparison = {
+                "key": comparison.key,
+                "status": comparison.status,
+                "per_metric": comparison.per_metric,
+            }
+            summary["baseline_comparison"] = baseline_comparison
+            write_json_report(output_dir / "baseline_comparison.json", baseline_comparison)
+            LOGGER.info(
+                "Baseline comparison for %s: %s",
+                config.baseline_key,
+                comparison.status,
+            )
+        else:
+            LOGGER.warning("Baseline key '%s' not found in %s", config.baseline_key, config.baseline_store)
+    if config.baseline_store and config.baseline_key and config.write_baseline:
+        upsert_baseline(
+            config.baseline_store,
+            config.baseline_key,
+            aggregate,
+            config.config_hash,
+            metadata={"dataset": config.dataset, "run_id": config.run_id},
+        )
+        LOGGER.info("Baseline '%s' updated at %s", config.baseline_key, config.baseline_store)
 
     write_json_report(output_dir / "summary.json", summary)
     _write_summary_csv(output_dir / "summary.csv", per_sequence_metrics, aggregate)
