@@ -49,3 +49,11 @@ def create_run_artifacts(
         created_at=created_at,
         metadata_path=metadata_path,
     )
+
+
+def write_resolved_config(run_dir: Path, resolved_config: dict) -> Path:
+    """Write the resolved experiment configuration into the run directory."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    resolved_path = run_dir / "resolved_config.json"
+    resolved_path.write_text(json.dumps(resolved_config, indent=2), encoding="utf-8")
+    return resolved_path

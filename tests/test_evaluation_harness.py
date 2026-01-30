@@ -60,3 +60,46 @@ def test_evaluation_harness_runs(tmp_path: Path) -> None:
 
     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert "aggregate_metrics" in summary_payload
+
+
+def test_evaluation_harness_with_experiment_schema(tmp_path: Path) -> None:
+    gt_path = tmp_path / "gt.txt"
+    est_path = tmp_path / "est.txt"
+    _write_traj(gt_path, [(0.0, 0.0), (1.0, 0.0)])
+    _write_traj(est_path, [(0.0, 0.0), (1.1, 0.0)])
+
+    config = {
+        "run": {
+            "run_id": "exp_schema",
+            "dataset": "custom",
+            "seed": 42,
+            "output_dir": str(tmp_path / "reports"),
+            "use_run_subdir": False,
+        },
+        "pipeline": {"feature_type": "orb", "motion_ransac_threshold": 0.01},
+        "evaluation": {
+            "trajectories": [
+                {
+                    "name": "synthetic",
+                    "gt_path": str(gt_path),
+                    "est_path": str(est_path),
+                    "format": "xy",
+                    "cols": "0,1",
+                    "est_cols": "0,1",
+                    "rpe_delta": 1,
+                }
+            ]
+        },
+    }
+
+    config_path = tmp_path / "experiment.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    eval_config = load_config(config_path)
+    summary = run_evaluation(eval_config)
+
+    resolved_path = Path(summary["run_dir"]) / "resolved_config.json"
+    assert resolved_path.exists()
+    resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
+    assert resolved["run_id"] == "exp_schema"
+    assert resolved["pipeline"]["feature_type"] == "orb"
