@@ -51,6 +51,26 @@ reproducible run artifacts to enable reliable accuracy iteration.
 - **Scale handling**: explore scene constraints, motion priors, or learned scale
   hints to further reduce monocular drift on long KITTI sequences.
 
+## Production-Grade Tasks (Priority)
+
+### 1) Benchmark Regression Gate (CI + Baselines)
+- Add deterministic evaluation configs for short KITTI/TUM sequences.
+- Store baseline metrics (ATE/RPE + config hash) and enforce regression
+  thresholds in CI.
+- Publish run artifacts and summaries for traceability.
+
+### 2) Persistent Map + Relocalization
+- Define map serialization for keyframes, descriptors, 3D points, and pose-graph
+  edges.
+- Implement load/save + relocalization (BoW/descriptor matching + geometric
+  verification).
+- Add failure recovery hooks for tracking loss.
+
+### 3) Multi-Camera Rig Abstraction + Calibration Tooling
+- Add a camera rig model (intrinsics/extrinsics + synchronization).
+- Extend ingestion to support stereo/multi-camera datasets (KITTI-style).
+- Provide calibration validation/visualization utilities.
+
 ## Near-term (Accuracy + KITTI)
 - **Dataset integrity + run provenance**:
   - Add a dataset validation command for KITTI and TUM with clear error

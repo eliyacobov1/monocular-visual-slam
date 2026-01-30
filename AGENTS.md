@@ -36,5 +36,15 @@ components once Python baselines are solid.
 - Metrics reporting (ATE, RPE) with consistent config handling.
 - Reproducible demo scripts for key sequences.
 
+## Production-Grade Roadmap (Next Milestones)
+- **Benchmark regression gating**: CI-based KITTI/TUM evaluation with
+  deterministic configs, baseline metrics storage, and pass/fail thresholds for
+  ATE/RPE.
+- **Persistent maps + relocalization**: save/load map state, reinitialize
+  tracking via place recognition, and recover from tracking loss.
+- **Multi-camera rig abstraction**: standardized intrinsics/extrinsics model,
+  calibration validation tooling, and synchronized ingestion for stereo and
+  multi-camera datasets.
+
 ## Planning
 See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
