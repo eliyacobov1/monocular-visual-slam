@@ -17,6 +17,8 @@ pose-graph optimization.
   short-term trajectory refinement.
 - **Loop closure detection** via Bag-of-Words (BoW) place recognition with
   geometric verification.
+- **Persistent map snapshots + relocalization** to save/load keyframes and
+  recover tracking after failures.
 - **Pose-graph optimization** in SE(3), with optional **Sim(3)** loop correction
   to mitigate scale drift in monocular runs.
 - **Evaluation harness** for ATE/RPE on KITTI and TUM, plus dataset validation
@@ -39,6 +41,10 @@ pose-graph optimization.
    - BoW place recognition for candidate loops (`loop_closure.py`).
    - Geometric verification (essential matrix / homography) before acceptance.
    - Pose-graph optimization with optional Sim(3) corrections (`pose_graph.py`).
+
+4. **Persistence + Relocalization**
+   - Schema-versioned map snapshots and BoW indices (`persistent_map.py`).
+   - BoW candidate retrieval plus geometric verification for relocalization.
 
 ## Mathematical Foundation
 

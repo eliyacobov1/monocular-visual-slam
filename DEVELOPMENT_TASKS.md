@@ -63,7 +63,7 @@ reproducible run artifacts to enable reliable accuracy iteration.
 - Define map serialization for keyframes, descriptors, 3D points, and pose-graph
   edges.
 - Implement load/save + relocalization (BoW/descriptor matching + geometric
-  verification).
+  verification) with schema versioning, fail-fast validation, and logging.
 - Add failure recovery hooks for tracking loss.
 
 ### 3) Multi-Camera Rig Abstraction + Calibration Tooling
@@ -77,6 +77,9 @@ reproducible run artifacts to enable reliable accuracy iteration.
     reporting and suggested fixes.
   - Capture per-run metadata (config hash, feature pipeline, calibration) in a
     deterministic run artifact directory.
+- **Persistent map + relocalization baseline**:
+  - Add JSON/NPZ-backed map snapshots with BoW candidate retrieval and
+    geometric verification to reinitialize tracking after failure.
 - **Better feature/motion estimation**:
   - Evaluate alternative feature pipelines (e.g., SuperPoint + SuperGlue) behind
     an interface that still supports ORB.

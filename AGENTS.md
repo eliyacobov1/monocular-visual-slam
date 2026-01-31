@@ -41,7 +41,8 @@ components once Python baselines are solid.
   deterministic configs, baseline metrics storage, and pass/fail thresholds for
   ATE/RPE.
 - **Persistent maps + relocalization**: save/load map state, reinitialize
-  tracking via place recognition, and recover from tracking loss.
+  tracking via place recognition, and recover from tracking loss with
+  schema-versioned map snapshots and fail-fast validation.
 - **Multi-camera rig abstraction**: standardized intrinsics/extrinsics model,
   calibration validation tooling, and synchronized ingestion for stereo and
   multi-camera datasets.
