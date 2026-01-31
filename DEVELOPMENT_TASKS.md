@@ -10,6 +10,8 @@ acceleration follow once accuracy targets are met.
   including calibration parsing and synchronized frame iteration.
 - **Config-driven evaluation harness**: reproducible metrics runs with
   JSON/CSV reporting and config hashing for traceability.
+- **Benchmark regression gate**: added a regression gate CLI that runs
+  evaluation configs, compares against baselines, and fails fast on regressions.
 - **Keyframe management + local bundle adjustment**: introduced a keyframe
   selection policy and a sliding-window BA to improve short-term pose stability.
 - **Loop-closure verification + robust constraints** (commit `dbbd4ee`): added
@@ -54,10 +56,7 @@ reproducible run artifacts to enable reliable accuracy iteration.
 ## Production-Grade Tasks (Priority)
 
 ### 1) Benchmark Regression Gate (CI + Baselines)
-- Add deterministic evaluation configs for short KITTI/TUM sequences.
-- Store baseline metrics (ATE/RPE + config hash) and enforce regression
-  thresholds in CI.
-- Publish run artifacts and summaries for traceability.
+**Status**: Complete (regression gate CLI + baseline comparisons).
 
 ### 2) Persistent Map + Relocalization
 - Define map serialization for keyframes, descriptors, 3D points, and pose-graph

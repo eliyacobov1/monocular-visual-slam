@@ -35,6 +35,7 @@ components once Python baselines are solid.
 - A standard evaluation harness for KITTI and TUM.
 - Metrics reporting (ATE, RPE) with consistent config handling.
 - Reproducible demo scripts for key sequences.
+- Regression gate CLI that enforces baseline thresholds for CI readiness.
 
 ## Production-Grade Roadmap (Next Milestones)
 - **Benchmark regression gating**: CI-based KITTI/TUM evaluation with
