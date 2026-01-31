@@ -11,8 +11,10 @@ import cv2
 import numpy as np
 
 from data_persistence import (
+    FrameDiagnosticsEntry,
     RunDataStore,
     TrajectoryAccumulator,
+    build_frame_diagnostics_bundle,
     build_metrics_bundle,
     summarize_trajectory,
 )
@@ -54,6 +56,7 @@ class SLAMRunResult:
     run_dir: Path
     trajectory_path: Path
     metrics_path: Path
+    diagnostics_path: Path
     frame_diagnostics: tuple[FrameDiagnostics, ...]
 
 
@@ -143,10 +146,25 @@ class SLAMSystem:
         metrics = summarize_trajectory(trajectory_bundle)
         metrics_bundle = build_metrics_bundle("slam_metrics", metrics)
         metrics_path = self.data_store.save_metrics(metrics_bundle)
+        diagnostics_bundle = build_frame_diagnostics_bundle(
+            "frame_diagnostics",
+            (
+                FrameDiagnosticsEntry(
+                    frame_id=entry.frame_id,
+                    timestamp=entry.timestamp,
+                    match_count=entry.match_count,
+                    inliers=entry.inliers,
+                    method=entry.method,
+                )
+                for entry in self.frame_diagnostics
+            ),
+        )
+        diagnostics_path = self.data_store.save_frame_diagnostics(diagnostics_bundle)
         return SLAMRunResult(
             run_dir=self.data_store.metadata.run_dir,
             trajectory_path=trajectory_path,
             metrics_path=metrics_path,
+            diagnostics_path=diagnostics_path,
             frame_diagnostics=tuple(self.frame_diagnostics),
         )
 

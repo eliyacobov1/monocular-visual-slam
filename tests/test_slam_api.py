@@ -40,4 +40,5 @@ def test_slam_api_runs_with_blank_frames(tmp_path: Path) -> None:
 
     assert result.trajectory_path.exists()
     assert result.metrics_path.exists()
+    assert result.diagnostics_path.exists()
     assert len(result.frame_diagnostics) == 2

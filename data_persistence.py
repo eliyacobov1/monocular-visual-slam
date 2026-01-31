@@ -51,6 +51,26 @@ class MetricsBundle:
 
 
 @dataclass(frozen=True)
+class FrameDiagnosticsEntry:
+    """Per-frame diagnostics entry for pose estimation."""
+
+    frame_id: int
+    timestamp: float
+    match_count: int
+    inliers: int
+    method: str
+
+
+@dataclass(frozen=True)
+class FrameDiagnosticsBundle:
+    """Frame diagnostics bundle for a run."""
+
+    name: str
+    entries: tuple[FrameDiagnosticsEntry, ...]
+    recorded_at: str
+
+
+@dataclass(frozen=True)
 class MapBundle:
     """Map bundle linking to stored persistent map data."""
 
@@ -97,9 +117,11 @@ class RunDataStore:
         self._trajectory_dir = metadata.run_dir / "trajectories"
         self._metrics_dir = metadata.run_dir / "metrics"
         self._maps_dir = metadata.run_dir / "maps"
+        self._diagnostics_dir = metadata.run_dir / "diagnostics"
         self._trajectory_dir.mkdir(parents=True, exist_ok=True)
         self._metrics_dir.mkdir(parents=True, exist_ok=True)
         self._maps_dir.mkdir(parents=True, exist_ok=True)
+        self._diagnostics_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def create(
@@ -199,6 +221,36 @@ class RunDataStore:
         LOGGER.info("Saved metrics '%s' to %s", bundle.name, metrics_path)
         return metrics_path
 
+    def save_frame_diagnostics(self, bundle: FrameDiagnosticsBundle) -> Path:
+        if not bundle.entries:
+            raise ValueError("Frame diagnostics bundle must include entries")
+        diagnostics_path = (
+            self._diagnostics_dir / f"{self._sanitize_name(bundle.name)}.json"
+        )
+        payload = {
+            "name": bundle.name,
+            "recorded_at": bundle.recorded_at,
+            "entries": [
+                {
+                    "frame_id": entry.frame_id,
+                    "timestamp": entry.timestamp,
+                    "match_count": entry.match_count,
+                    "inliers": entry.inliers,
+                    "method": entry.method,
+                }
+                for entry in bundle.entries
+            ],
+        }
+        try:
+            diagnostics_path.write_text(
+                json.dumps(payload, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            LOGGER.exception("Failed to write frame diagnostics '%s'", bundle.name)
+            raise RuntimeError("Failed to write frame diagnostics") from exc
+        LOGGER.info("Saved frame diagnostics '%s' to %s", bundle.name, diagnostics_path)
+        return diagnostics_path
+
     def load_metrics(self, name: str) -> MetricsBundle:
         metrics_path = self._metrics_dir / f"{self._sanitize_name(name)}.json"
         if not metrics_path.exists():
@@ -214,6 +266,36 @@ class RunDataStore:
         return MetricsBundle(
             name=str(payload.get("name", name)),
             metrics=metrics,
+            recorded_at=str(payload.get("recorded_at", _timestamp())),
+        )
+
+    def load_frame_diagnostics(self, name: str) -> FrameDiagnosticsBundle:
+        diagnostics_path = (
+            self._diagnostics_dir / f"{self._sanitize_name(name)}.json"
+        )
+        if not diagnostics_path.exists():
+            raise FileNotFoundError(f"Frame diagnostics '{name}' not found")
+        try:
+            payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            LOGGER.exception("Failed to read frame diagnostics '%s'", name)
+            raise RuntimeError("Failed to read frame diagnostics") from exc
+        entries_payload = payload.get("entries", [])
+        if not entries_payload:
+            raise ValueError("Frame diagnostics payload is empty")
+        entries = tuple(
+            FrameDiagnosticsEntry(
+                frame_id=int(entry.get("frame_id", 0)),
+                timestamp=float(entry.get("timestamp", 0.0)),
+                match_count=int(entry.get("match_count", 0)),
+                inliers=int(entry.get("inliers", 0)),
+                method=str(entry.get("method", "")),
+            )
+            for entry in entries_payload
+        )
+        return FrameDiagnosticsBundle(
+            name=str(payload.get("name", name)),
+            entries=entries,
             recorded_at=str(payload.get("recorded_at", _timestamp())),
         )
 
@@ -285,6 +367,19 @@ def build_metrics_bundle(name: str, metrics: Mapping[str, float]) -> MetricsBund
     return MetricsBundle(
         name=name,
         metrics={str(k): float(v) for k, v in metrics.items()},
+        recorded_at=_timestamp(),
+    )
+
+
+def build_frame_diagnostics_bundle(
+    name: str,
+    entries: Iterable[FrameDiagnosticsEntry],
+) -> FrameDiagnosticsBundle:
+    """Build a frame diagnostics bundle with a current timestamp."""
+
+    return FrameDiagnosticsBundle(
+        name=name,
+        entries=tuple(entries),
         recorded_at=_timestamp(),
     )
 
