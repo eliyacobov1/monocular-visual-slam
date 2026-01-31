@@ -249,5 +249,6 @@ slam = SLAMSystem(config)
 # result = slam.run_sequence(frames, timestamps)
 ```
 
-The API writes trajectories and metrics into `reports/<run_id>/` by default,
-while keeping run metadata reproducible and inspectable.
+The API writes trajectories, metrics, and per-frame diagnostics into
+`reports/<run_id>/` by default, while keeping run metadata reproducible and
+inspectable.

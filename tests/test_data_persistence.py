@@ -10,7 +10,12 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from data_persistence import RunDataStore, build_metrics_bundle
+from data_persistence import (
+    FrameDiagnosticsEntry,
+    RunDataStore,
+    build_frame_diagnostics_bundle,
+    build_metrics_bundle,
+)
 
 
 def test_run_data_store_roundtrip(tmp_path: Path) -> None:
@@ -40,3 +45,27 @@ def test_run_data_store_roundtrip(tmp_path: Path) -> None:
     store.save_metrics(metrics_bundle)
     loaded_metrics = store.load_metrics("metrics")
     assert loaded_metrics.metrics["num_poses"] == 2.0
+
+    diagnostics_bundle = build_frame_diagnostics_bundle(
+        "frame_diagnostics",
+        [
+            FrameDiagnosticsEntry(
+                frame_id=0,
+                timestamp=0.0,
+                match_count=0,
+                inliers=0,
+                method="bootstrap",
+            ),
+            FrameDiagnosticsEntry(
+                frame_id=1,
+                timestamp=1.0,
+                match_count=10,
+                inliers=8,
+                method="essential",
+            ),
+        ],
+    )
+    store.save_frame_diagnostics(diagnostics_bundle)
+    loaded_diagnostics = store.load_frame_diagnostics("frame_diagnostics")
+    assert len(loaded_diagnostics.entries) == 2
+    assert loaded_diagnostics.entries[1].method == "essential"
