@@ -1,0 +1,12 @@
+{
+  "runs": [
+    {
+      "name": "kitti_odometry_smoke",
+      "config_path": "configs/evaluation/kitti_odometry.json",
+      "require_baseline": true
+    }
+  ],
+  "output_path": "reports/regression_gate_summary.json",
+  "max_workers": 1,
+  "fail_fast": true
+}

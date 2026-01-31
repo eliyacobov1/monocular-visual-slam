@@ -186,6 +186,28 @@ The repository provides both a direct evaluator (`evaluate_trajectory.py`) and a
 configuration-driven harness (`evaluation_harness.py`) that emits JSON/CSV
 artifacts for reproducible benchmarks.
 
+For CI-style regression gating, use `benchmark_regression_gate.py` with a gate
+config that references evaluation configs and baseline thresholds:
+
+```json
+{
+  "runs": [
+    {
+      "name": "kitti_00_smoke",
+      "config_path": "configs/evaluation/kitti_odometry.json",
+      "require_baseline": true
+    }
+  ],
+  "output_path": "reports/regression_gate_summary.json",
+  "max_workers": 1,
+  "fail_fast": true
+}
+```
+
+```bash
+python benchmark_regression_gate.py --config configs/evaluation/regression_gate.json
+```
+
 **Results table (fill with your runs):**
 
 | Dataset | Sequence | ATE (m) | RPE (m) | Notes |
