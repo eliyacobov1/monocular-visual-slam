@@ -220,3 +220,34 @@ python benchmark_regression_gate.py --config configs/evaluation/regression_gate.
 - **License**: Not specified yet (add a `LICENSE` file to formalize usage).
 - **Acknowledgments**: KITTI and TUM RGB-D datasets; OpenCV, NumPy, SciPy, and
   scikit-learn.
+
+## SLAM API + Persistence Layer
+
+For programmatic runs, use the high-level API and persistence layer to save
+trajectories and metrics with structured metadata:
+
+```python
+from pathlib import Path
+import numpy as np
+
+from feature_pipeline import FeaturePipelineConfig
+from robust_pose_estimator import RobustPoseEstimatorConfig
+from slam_api import SLAMSystem, SLAMSystemConfig
+
+config = SLAMSystemConfig(
+    run_id="demo_run",
+    output_dir=Path("reports"),
+    config_path=Path("configs/evaluation/kitti_odometry.json"),
+    config_hash="manual",
+    intrinsics=np.eye(3),
+    feature_config=FeaturePipelineConfig(),
+    pose_config=RobustPoseEstimatorConfig(),
+)
+
+slam = SLAMSystem(config)
+# feed frames + timestamps from your dataset loader
+# result = slam.run_sequence(frames, timestamps)
+```
+
+The API writes trajectories and metrics into `reports/<run_id>/` by default,
+while keeping run metadata reproducible and inspectable.

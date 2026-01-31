@@ -50,3 +50,11 @@ components once Python baselines are solid.
 
 ## Planning
 See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
+
+## Deep Sprint (Three Pillars)
+- **Persistence Layer**: run-centric storage for trajectories, metrics, and map
+  snapshots with structured metadata.
+- **SLAM API Wrapper**: high-level interface that orchestrates the pipeline and
+  persists outputs via the data layer.
+- **Robust Pose Suite**: multi-model pose estimation (essential + homography)
+  with model selection, diagnostics, and accuracy-first defaults.
