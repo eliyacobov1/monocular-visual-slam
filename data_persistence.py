@@ -59,6 +59,9 @@ class FrameDiagnosticsEntry:
     match_count: int
     inliers: int
     method: str
+    inlier_ratio: float
+    median_parallax: float
+    score: float
 
 
 @dataclass(frozen=True)
@@ -237,6 +240,9 @@ class RunDataStore:
                     "match_count": entry.match_count,
                     "inliers": entry.inliers,
                     "method": entry.method,
+                    "inlier_ratio": entry.inlier_ratio,
+                    "median_parallax": entry.median_parallax,
+                    "score": entry.score,
                 }
                 for entry in bundle.entries
             ],
@@ -290,6 +296,9 @@ class RunDataStore:
                 match_count=int(entry.get("match_count", 0)),
                 inliers=int(entry.get("inliers", 0)),
                 method=str(entry.get("method", "")),
+                inlier_ratio=float(entry.get("inlier_ratio", 0.0)),
+                median_parallax=float(entry.get("median_parallax", 0.0)),
+                score=float(entry.get("score", 0.0)),
             )
             for entry in entries_payload
         )
