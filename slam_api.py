@@ -19,7 +19,11 @@ from data_persistence import (
     summarize_trajectory,
 )
 from feature_pipeline import FeaturePipelineConfig, build_feature_pipeline
-from robust_pose_estimator import RobustPoseEstimator, RobustPoseEstimatorConfig
+from robust_pose_estimator import (
+    PoseEstimationDiagnostics,
+    RobustPoseEstimator,
+    RobustPoseEstimatorConfig,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +51,9 @@ class FrameDiagnostics:
     match_count: int
     inliers: int
     method: str
+    inlier_ratio: float
+    median_parallax: float
+    score: float
 
 
 @dataclass(frozen=True)
@@ -127,12 +134,7 @@ class SLAMSystem:
         self._prev_frame = frame_gray
         self._prev_kp = kp
         self._prev_desc = desc
-        self._append_pose(
-            timestamp,
-            method=pose_estimate.diagnostics.method,
-            match_count=pose_estimate.diagnostics.match_count,
-            inliers=pose_estimate.diagnostics.inliers,
-        )
+        self._append_pose_with_diagnostics(timestamp, pose_estimate.diagnostics)
         return self._current_pose.copy()
 
     def run_sequence(self, frames: Iterable[np.ndarray], timestamps: Iterable[float]) -> SLAMRunResult:
@@ -155,6 +157,9 @@ class SLAMSystem:
                     match_count=entry.match_count,
                     inliers=entry.inliers,
                     method=entry.method,
+                    inlier_ratio=entry.inlier_ratio,
+                    median_parallax=entry.median_parallax,
+                    score=entry.score,
                 )
                 for entry in self.frame_diagnostics
             ),
@@ -177,6 +182,7 @@ class SLAMSystem:
         inliers: int,
     ) -> None:
         self.trajectory.append(self._current_pose.copy(), timestamp, self._frame_id)
+        inlier_ratio = 0.0 if match_count <= 0 else float(inliers) / float(match_count)
         self.frame_diagnostics.append(
             FrameDiagnostics(
                 frame_id=self._frame_id,
@@ -184,6 +190,29 @@ class SLAMSystem:
                 match_count=int(match_count),
                 inliers=int(inliers),
                 method=str(method),
+                inlier_ratio=float(inlier_ratio),
+                median_parallax=0.0,
+                score=0.0,
+            )
+        )
+        self._frame_id += 1
+
+    def _append_pose_with_diagnostics(
+        self,
+        timestamp: float,
+        diagnostics: PoseEstimationDiagnostics,
+    ) -> None:
+        self.trajectory.append(self._current_pose.copy(), timestamp, self._frame_id)
+        self.frame_diagnostics.append(
+            FrameDiagnostics(
+                frame_id=self._frame_id,
+                timestamp=float(timestamp),
+                match_count=int(diagnostics.match_count),
+                inliers=int(diagnostics.inliers),
+                method=str(diagnostics.method),
+                inlier_ratio=float(diagnostics.inlier_ratio),
+                median_parallax=float(diagnostics.median_parallax),
+                score=float(diagnostics.score),
             )
         )
         self._frame_id += 1

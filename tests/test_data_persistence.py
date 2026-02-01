@@ -57,6 +57,9 @@ def test_run_data_store_roundtrip(tmp_path: Path) -> None:
                 match_count=0,
                 inliers=0,
                 method="bootstrap",
+                inlier_ratio=0.0,
+                median_parallax=0.0,
+                score=0.0,
             ),
             FrameDiagnosticsEntry(
                 frame_id=1,
@@ -64,6 +67,9 @@ def test_run_data_store_roundtrip(tmp_path: Path) -> None:
                 match_count=10,
                 inliers=8,
                 method="essential",
+                inlier_ratio=0.8,
+                median_parallax=1.5,
+                score=1.2,
             ),
         ],
     )

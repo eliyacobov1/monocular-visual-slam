@@ -268,6 +268,7 @@ slam = SLAMSystem(config)
 # result = slam.run_sequence(frames, timestamps)
 ```
 
-The API writes trajectories, metrics, and per-frame diagnostics into
+The API writes trajectories, metrics, and per-frame diagnostics (including
+match/inlier counts, inlier ratio, parallax, and model score) into
 `reports/<run_id>/` by default, while keeping run metadata reproducible and
 inspectable.
