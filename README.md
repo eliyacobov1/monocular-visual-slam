@@ -213,7 +213,12 @@ config that references evaluation configs and baseline thresholds:
   "runs": [
     {
       "name": "kitti_00_smoke",
-      "config_path": "configs/evaluation/kitti_odometry.json",
+      "config_path": "kitti_odometry.json",
+      "require_baseline": true
+    },
+    {
+      "name": "tum_freiburg1_smoke",
+      "config_path": "tum_freiburg1.json",
       "require_baseline": true
     }
   ],

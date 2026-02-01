@@ -146,3 +146,17 @@ def test_regression_gate_flags_missing_baseline(tmp_path: Path) -> None:
 
     assert summary["status"] == "regressed"
     assert summary["runs"][0]["status"] == "missing_baseline"
+
+
+def test_default_regression_gate_config_includes_kitti_and_tum() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    gate_config_path = repo_root / "configs" / "evaluation" / "regression_gate.json"
+
+    gate_config = load_gate_config(gate_config_path)
+
+    run_names = [run.name for run in gate_config.runs]
+    run_configs = {run.name: run.config_path for run in gate_config.runs}
+
+    assert run_names == ["kitti_odometry_smoke", "tum_freiburg1_smoke"]
+    assert run_configs["kitti_odometry_smoke"] == gate_config_path.parent / "kitti_odometry.json"
+    assert run_configs["tum_freiburg1_smoke"] == gate_config_path.parent / "tum_freiburg1.json"
