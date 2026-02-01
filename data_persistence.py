@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, TYPE_CHECKING
+from typing import Any, Iterable, Mapping, Sequence, TYPE_CHECKING
 
 import numpy as np
 
@@ -397,6 +397,50 @@ def summarize_trajectory(trajectory: TrajectoryBundle) -> dict[str, float]:
         "mean_step": float(step_lengths.mean()),
         "max_step": float(step_lengths.max()),
     }
+
+
+def load_trajectory_npz(path: Path, name: str | None = None) -> TrajectoryBundle:
+    """Load a trajectory bundle from a persisted npz file."""
+
+    if not path.exists():
+        raise FileNotFoundError(f"Trajectory file not found: {path}")
+    try:
+        data = np.load(path)
+    except OSError as exc:
+        LOGGER.exception("Failed to read trajectory npz '%s'", path)
+        raise RuntimeError("Failed to read trajectory npz") from exc
+    if "poses" not in data or "timestamps" not in data:
+        raise ValueError("Trajectory npz must include poses and timestamps arrays")
+    poses = data["poses"]
+    timestamps = data["timestamps"]
+    frame_ids = data.get("frame_ids")
+    bundle = TrajectoryBundle(
+        name=name or path.stem,
+        poses=poses,
+        timestamps=timestamps,
+        frame_ids=frame_ids if frame_ids is not None and len(frame_ids) > 0 else None,
+    )
+    RunDataStore._validate_trajectory(bundle)
+    return bundle
+
+
+def trajectory_positions(
+    trajectory: TrajectoryBundle,
+    columns: Sequence[int] | None = None,
+) -> np.ndarray:
+    """Return translation positions from a trajectory bundle."""
+
+    if trajectory.poses.shape[1:] != (4, 4):
+        raise ValueError("Trajectory poses must be shaped (N,4,4)")
+    positions = trajectory.poses[:, :3, 3]
+    if columns is None:
+        return positions.astype(np.float64, copy=False)
+    if not columns:
+        raise ValueError("Trajectory columns must be non-empty when provided")
+    indices = [int(idx) for idx in columns]
+    if any(idx < 0 or idx > 2 for idx in indices):
+        raise ValueError("Trajectory columns must be between 0 and 2")
+    return positions[:, indices].astype(np.float64, copy=False)
 
 
 def load_metrics_series(directory: Path) -> list[MetricsBundle]:

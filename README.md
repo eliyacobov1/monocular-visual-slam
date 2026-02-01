@@ -148,6 +148,25 @@ pipeline settings, and baseline regression checks in one file:
 }
 ```
 
+The evaluation harness also supports estimated trajectories saved as SLAM
+artifacts (`.npz` bundles) by setting `est_format` to `"slam_npz"` and pointing
+`est_path` at the saved file. For example:
+
+```json
+{
+  "trajectories": [
+    {
+      "name": "slam_run",
+      "gt_path": "/data/kitti/poses/00.txt",
+      "est_path": "runs/slam_trajectory.npz",
+      "format": "kitti_odom",
+      "est_format": "slam_npz",
+      "rpe_delta": 5
+    }
+  ]
+}
+```
+
 You can also use `kitti_dataset.py` directly to iterate frames and parse
 calibration.
 

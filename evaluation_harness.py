@@ -17,6 +17,7 @@ import numpy as np
 
 from experiment_registry import create_run_artifacts, write_resolved_config
 from regression_baselines import compare_metrics, load_baseline_store, upsert_baseline
+from data_persistence import load_trajectory_npz, trajectory_positions
 from evaluate_trajectory import (
     build_report_payload,
     compute_additional_metrics,
@@ -38,6 +39,7 @@ class TrajectoryEntry:
     format: str
     cols: str | None
     est_cols: str | None
+    est_format: str | None
     rpe_delta: int
 
 
@@ -93,6 +95,7 @@ def _build_entry_from_mapping(mapping: dict[str, Any], base_dir: Path) -> Trajec
         format=mapping.get("format", "xy"),
         cols=mapping.get("cols"),
         est_cols=mapping.get("est_cols"),
+        est_format=mapping.get("est_format"),
         rpe_delta=int(mapping.get("rpe_delta", 1)),
     )
 
@@ -189,6 +192,7 @@ def load_config(config_path: Path) -> EvaluationConfig:
             "format": entry.format,
             "cols": entry.cols,
             "est_cols": entry.est_cols,
+            "est_format": entry.est_format,
             "rpe_delta": entry.rpe_delta,
         }
         for entry in trajectories
@@ -232,16 +236,41 @@ def load_config(config_path: Path) -> EvaluationConfig:
     )
 
 
+def _parse_columns(value: str | None) -> list[int] | None:
+    if value is None:
+        return None
+    return [int(c) for c in value.split(",")]
+
+
+def _load_estimated_trajectory(
+    entry: TrajectoryEntry, gt_cols: list[int]
+) -> np.ndarray:
+    if entry.est_format == "slam_npz":
+        est_cols = _parse_columns(entry.est_cols)
+        if est_cols is None:
+            est_cols = list(range(len(gt_cols)))
+        bundle = load_trajectory_npz(entry.est_path)
+        return trajectory_positions(bundle, est_cols)
+    est_cols = gt_cols if entry.est_cols is None else _parse_columns(entry.est_cols)
+    if est_cols is None:
+        raise ValueError("Estimated trajectory columns could not be resolved")
+    return load_traj(str(entry.est_path), est_cols)
+
+
 def _evaluate_entry(entry: TrajectoryEntry) -> dict[str, Any]:
     cols = resolve_columns(entry.format, entry.cols)
-    est_cols = cols if entry.est_cols is None else [int(c) for c in entry.est_cols.split(",")]
     gt = load_traj(str(entry.gt_path), cols)
-    est = load_traj(str(entry.est_path), est_cols)
+    est = _load_estimated_trajectory(entry, cols)
+    if gt.shape[1] != est.shape[1]:
+        raise ValueError(
+            f"Trajectory dimension mismatch: gt has {gt.shape[1]} dims, est has {est.shape[1]}"
+        )
 
     metrics = compute_additional_metrics(gt, est, delta=entry.rpe_delta)
     metadata = {
         "sequence": entry.name,
         "format": entry.format,
+        "est_format": entry.est_format or entry.format,
         "rpe_delta": entry.rpe_delta,
         "gt_path": str(entry.gt_path),
         "est_path": str(entry.est_path),
