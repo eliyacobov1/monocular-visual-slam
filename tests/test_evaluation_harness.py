@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sys
 
+import numpy as np
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from evaluation_harness import load_config, run_evaluation
@@ -103,3 +105,47 @@ def test_evaluation_harness_with_experiment_schema(tmp_path: Path) -> None:
     resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
     assert resolved["run_id"] == "exp_schema"
     assert resolved["pipeline"]["feature_type"] == "orb"
+
+
+def test_evaluation_harness_with_slam_npz(tmp_path: Path) -> None:
+    gt_path = tmp_path / "gt.txt"
+    _write_traj(gt_path, [(0.0, 0.0), (1.0, 0.0), (2.0, 1.0)])
+
+    est_path = tmp_path / "slam_trajectory.npz"
+    poses = np.repeat(np.eye(4)[None, ...], 3, axis=0)
+    poses[1, 0, 3] = 1.0
+    poses[2, 0, 3] = 2.0
+    poses[2, 1, 3] = 1.0
+    np.savez_compressed(
+        est_path,
+        poses=poses,
+        timestamps=np.array([0.0, 1.0, 2.0]),
+        frame_ids=np.array([0, 1, 2]),
+    )
+
+    config = {
+        "run_id": "unit_npz",
+        "dataset": "custom",
+        "seed": 0,
+        "output_dir": str(tmp_path / "reports"),
+        "trajectories": [
+            {
+                "name": "slam_run",
+                "gt_path": str(gt_path),
+                "est_path": str(est_path),
+                "format": "xy",
+                "cols": "0,1",
+                "est_format": "slam_npz",
+                "rpe_delta": 1,
+            }
+        ],
+    }
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    eval_config = load_config(config_path)
+    summary = run_evaluation(eval_config)
+
+    assert summary["run_id"] == "unit_npz"
+    assert "slam_run" in summary["per_sequence"]

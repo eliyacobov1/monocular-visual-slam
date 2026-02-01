@@ -15,6 +15,8 @@ from data_persistence import (
     RunDataStore,
     build_frame_diagnostics_bundle,
     build_metrics_bundle,
+    load_trajectory_npz,
+    trajectory_positions,
 )
 
 
@@ -69,3 +71,34 @@ def test_run_data_store_roundtrip(tmp_path: Path) -> None:
     loaded_diagnostics = store.load_frame_diagnostics("frame_diagnostics")
     assert len(loaded_diagnostics.entries) == 2
     assert loaded_diagnostics.entries[1].method == "essential"
+
+
+def test_load_trajectory_npz_positions(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"run_id": "unit"}), encoding="utf-8")
+
+    store = RunDataStore.create(
+        base_dir=tmp_path,
+        run_id="unit_run",
+        config_path=config_path,
+        config_hash="hash",
+        use_subdir=False,
+        resolved_config={"run_id": "unit_run"},
+    )
+
+    accumulator = store.create_accumulator("trajectory_npz")
+    pose_a = np.eye(4)
+    pose_b = np.eye(4)
+    pose_b[0, 3] = 2.0
+    pose_b[1, 3] = 1.0
+    accumulator.append(pose_a, 0.0, 0)
+    accumulator.append(pose_b, 1.0, 1)
+    bundle = accumulator.as_bundle()
+
+    trajectory_path = store.save_trajectory(bundle)
+    loaded = load_trajectory_npz(trajectory_path)
+    positions = trajectory_positions(loaded, [0, 1])
+
+    assert positions.shape == (2, 2)
+    assert positions[1, 0] == 2.0
+    assert positions[1, 1] == 1.0
