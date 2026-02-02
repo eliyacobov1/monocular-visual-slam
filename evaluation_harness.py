@@ -17,7 +17,11 @@ import numpy as np
 
 from experiment_registry import create_run_artifacts, write_resolved_config
 from regression_baselines import compare_metrics, load_baseline_store, upsert_baseline
-from data_persistence import load_trajectory_npz, trajectory_positions
+from data_persistence import (
+    load_trajectory_npz,
+    trajectory_artifact_path,
+    trajectory_positions,
+)
 from evaluate_trajectory import (
     build_report_payload,
     compute_additional_metrics,
@@ -40,6 +44,8 @@ class TrajectoryEntry:
     cols: str | None
     est_cols: str | None
     est_format: str | None
+    est_run_dir: Path | None
+    est_trajectory: str | None
     rpe_delta: int
 
 
@@ -88,14 +94,30 @@ def _hash_config(path: Path) -> str:
 
 
 def _build_entry_from_mapping(mapping: dict[str, Any], base_dir: Path) -> TrajectoryEntry:
+    est_run_dir = mapping.get("est_run_dir")
+    est_trajectory = mapping.get("est_trajectory")
+    est_format = mapping.get("est_format")
+    if est_run_dir and mapping.get("est_path"):
+        raise ValueError("Use either est_path or est_run_dir, not both")
+    if est_run_dir:
+        if est_trajectory is None:
+            est_trajectory = str(mapping["name"])
+        run_dir = _resolve_path(est_run_dir, base_dir)
+        est_path = trajectory_artifact_path(run_dir, str(est_trajectory))
+        if est_format is None:
+            est_format = "slam_npz"
+    else:
+        est_path = _resolve_path(mapping["est_path"], base_dir)
     return TrajectoryEntry(
         name=str(mapping["name"]),
         gt_path=_resolve_path(mapping["gt_path"], base_dir),
-        est_path=_resolve_path(mapping["est_path"], base_dir),
+        est_path=est_path,
         format=mapping.get("format", "xy"),
         cols=mapping.get("cols"),
         est_cols=mapping.get("est_cols"),
-        est_format=mapping.get("est_format"),
+        est_format=est_format,
+        est_run_dir=_resolve_path(est_run_dir, base_dir) if est_run_dir else None,
+        est_trajectory=str(est_trajectory) if est_trajectory is not None else None,
         rpe_delta=int(mapping.get("rpe_delta", 1)),
     )
 
@@ -155,6 +177,9 @@ def _build_kitti_entries(config: dict[str, Any], base_dir: Path) -> list[Traject
                 cols=None,
                 est_cols=None,
                 rpe_delta=rpe_delta,
+                est_format=None,
+                est_run_dir=None,
+                est_trajectory=None,
             )
         )
     return entries
@@ -193,6 +218,8 @@ def load_config(config_path: Path) -> EvaluationConfig:
             "cols": entry.cols,
             "est_cols": entry.est_cols,
             "est_format": entry.est_format,
+            "est_run_dir": str(entry.est_run_dir) if entry.est_run_dir else None,
+            "est_trajectory": entry.est_trajectory,
             "rpe_delta": entry.rpe_delta,
         }
         for entry in trajectories
@@ -275,6 +302,9 @@ def _evaluate_entry(entry: TrajectoryEntry) -> dict[str, Any]:
         "gt_path": str(entry.gt_path),
         "est_path": str(entry.est_path),
     }
+    if entry.est_run_dir:
+        metadata["est_run_dir"] = str(entry.est_run_dir)
+        metadata["est_trajectory"] = entry.est_trajectory or entry.name
     payload = build_report_payload(metrics, metadata)
     return payload
 

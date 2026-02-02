@@ -170,7 +170,7 @@ class RunDataStore:
 
     def save_trajectory(self, bundle: TrajectoryBundle) -> Path:
         self._validate_trajectory(bundle)
-        filename = f"{self._sanitize_name(bundle.name)}.npz"
+        filename = f"{sanitize_artifact_name(bundle.name)}.npz"
         path = self._trajectory_dir / filename
         try:
             np.savez_compressed(
@@ -186,7 +186,7 @@ class RunDataStore:
         return path
 
     def load_trajectory(self, name: str) -> TrajectoryBundle:
-        filename = f"{self._sanitize_name(name)}.npz"
+        filename = f"{sanitize_artifact_name(name)}.npz"
         path = self._trajectory_dir / filename
         if not path.exists():
             raise FileNotFoundError(f"Trajectory '{name}' not found")
@@ -210,7 +210,7 @@ class RunDataStore:
     def save_metrics(self, bundle: MetricsBundle) -> Path:
         if not bundle.metrics:
             raise ValueError("Metrics bundle must include at least one metric")
-        metrics_path = self._metrics_dir / f"{self._sanitize_name(bundle.name)}.json"
+        metrics_path = self._metrics_dir / f"{sanitize_artifact_name(bundle.name)}.json"
         payload = {
             "name": bundle.name,
             "recorded_at": bundle.recorded_at,
@@ -228,7 +228,7 @@ class RunDataStore:
         if not bundle.entries:
             raise ValueError("Frame diagnostics bundle must include entries")
         diagnostics_path = (
-            self._diagnostics_dir / f"{self._sanitize_name(bundle.name)}.json"
+            self._diagnostics_dir / f"{sanitize_artifact_name(bundle.name)}.json"
         )
         payload = {
             "name": bundle.name,
@@ -258,7 +258,7 @@ class RunDataStore:
         return diagnostics_path
 
     def load_metrics(self, name: str) -> MetricsBundle:
-        metrics_path = self._metrics_dir / f"{self._sanitize_name(name)}.json"
+        metrics_path = self._metrics_dir / f"{sanitize_artifact_name(name)}.json"
         if not metrics_path.exists():
             raise FileNotFoundError(f"Metrics '{name}' not found")
         try:
@@ -277,7 +277,7 @@ class RunDataStore:
 
     def load_frame_diagnostics(self, name: str) -> FrameDiagnosticsBundle:
         diagnostics_path = (
-            self._diagnostics_dir / f"{self._sanitize_name(name)}.json"
+            self._diagnostics_dir / f"{sanitize_artifact_name(name)}.json"
         )
         if not diagnostics_path.exists():
             raise FileNotFoundError(f"Frame diagnostics '{name}' not found")
@@ -309,7 +309,7 @@ class RunDataStore:
         )
 
     def save_map_snapshot(self, name: str, snapshot: "PersistentMapSnapshot") -> MapBundle:
-        safe_name = self._sanitize_name(name)
+        safe_name = sanitize_artifact_name(name)
         map_dir = self._maps_dir / safe_name
         from persistent_map import PersistentMapStore
         store = PersistentMapStore()
@@ -349,10 +349,7 @@ class RunDataStore:
 
     @staticmethod
     def _sanitize_name(name: str) -> str:
-        if not name:
-            raise ValueError("Name must be non-empty")
-        safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name)
-        return safe.strip("_") or "run"
+        return sanitize_artifact_name(name)
 
     @staticmethod
     def _validate_trajectory(bundle: TrajectoryBundle) -> None:
@@ -368,6 +365,22 @@ class RunDataStore:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def sanitize_artifact_name(name: str) -> str:
+    """Return a filesystem-safe artifact name."""
+
+    if not name:
+        raise ValueError("Name must be non-empty")
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name)
+    return safe.strip("_") or "run"
+
+
+def trajectory_artifact_path(run_dir: Path, name: str) -> Path:
+    """Return the expected trajectory artifact path for a run directory."""
+
+    safe_name = sanitize_artifact_name(name)
+    return Path(run_dir) / "trajectories" / f"{safe_name}.npz"
 
 
 def build_metrics_bundle(name: str, metrics: Mapping[str, float]) -> MetricsBundle:

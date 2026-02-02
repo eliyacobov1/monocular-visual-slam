@@ -167,6 +167,25 @@ artifacts (`.npz` bundles) by setting `est_format` to `"slam_npz"` and pointing
 }
 ```
 
+You can also point at a run directory created by the SLAM API and let the
+harness resolve the trajectory artifact automatically via `est_run_dir` and an
+optional `est_trajectory` override (defaults to the entry `name`):
+
+```json
+{
+  "trajectories": [
+    {
+      "name": "slam_run",
+      "gt_path": "/data/kitti/poses/00.txt",
+      "est_run_dir": "reports/demo_run",
+      "est_trajectory": "slam_trajectory",
+      "format": "kitti_odom",
+      "rpe_delta": 5
+    }
+  ]
+}
+```
+
 You can also use `kitti_dataset.py` directly to iterate frames and parse
 calibration.
 
