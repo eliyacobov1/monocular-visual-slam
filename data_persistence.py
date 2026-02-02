@@ -121,10 +121,12 @@ class RunDataStore:
         self._metrics_dir = metadata.run_dir / "metrics"
         self._maps_dir = metadata.run_dir / "maps"
         self._diagnostics_dir = metadata.run_dir / "diagnostics"
+        self._telemetry_dir = metadata.run_dir / "telemetry"
         self._trajectory_dir.mkdir(parents=True, exist_ok=True)
         self._metrics_dir.mkdir(parents=True, exist_ok=True)
         self._maps_dir.mkdir(parents=True, exist_ok=True)
         self._diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        self._telemetry_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def create(
@@ -346,6 +348,10 @@ class RunDataStore:
 
     def list_map_snapshots(self) -> list[str]:
         return sorted(path.name for path in self._maps_dir.iterdir() if path.is_dir())
+
+    def telemetry_path(self, name: str) -> Path:
+        safe_name = sanitize_artifact_name(name)
+        return self._telemetry_dir / f"{safe_name}.json"
 
     @staticmethod
     def _sanitize_name(name: str) -> str:

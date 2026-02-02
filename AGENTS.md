@@ -58,3 +58,19 @@ See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
   persists outputs via the data layer.
 - **Robust Pose Suite**: multi-model pose estimation (essential + homography)
   with model selection, diagnostics, and accuracy-first defaults.
+
+## Task Completion Updates
+- ✅ **SLAM API Wrapper**: Added telemetry instrumentation with persisted timing
+  artifacts and flush-on-finalize behavior for reproducible runs.
+
+## Next-Gen Follow-up Tasks
+- Aggregate telemetry into evaluation reports with per-stage timing summaries
+  and regression thresholds for performance drift.
+- Add configurable telemetry sampling/decimation for long KITTI sequences to
+  control artifact sizes while retaining trends.
+- Implement pluggable telemetry sinks (JSONL streaming, Prometheus) for
+  large-scale experimentation and CI dashboards.
+
+## Technical Debt Log
+- Telemetry recorder currently stores events in memory before flushing; add a
+  streaming writer to reduce memory usage on long sequences.

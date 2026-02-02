@@ -24,6 +24,7 @@ from robust_pose_estimator import (
     RobustPoseEstimator,
     RobustPoseEstimatorConfig,
 )
+from run_telemetry import RunTelemetryRecorder, TelemetrySink, timed_event
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +41,9 @@ class SLAMSystemConfig:
     feature_config: FeaturePipelineConfig
     pose_config: RobustPoseEstimatorConfig
     use_run_subdir: bool = True
+    enable_telemetry: bool = True
+    telemetry_name: str = "slam_telemetry"
+    telemetry_sink: TelemetrySink | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class SLAMRunResult:
     trajectory_path: Path
     metrics_path: Path
     diagnostics_path: Path
+    telemetry_path: Path | None
     frame_diagnostics: tuple[FrameDiagnostics, ...]
 
 
@@ -89,6 +94,7 @@ class SLAMSystem:
             },
         )
         self.trajectory = self.data_store.create_accumulator("slam_trajectory")
+        self.telemetry = self._build_telemetry_sink()
         self.frame_diagnostics: list[FrameDiagnostics] = []
         self._prev_frame: np.ndarray | None = None
         self._prev_kp: list[cv2.KeyPoint] | None = None
@@ -99,12 +105,18 @@ class SLAMSystem:
     def process_frame(self, frame: np.ndarray, timestamp: float) -> np.ndarray:
         if frame.ndim not in (2, 3):
             raise ValueError("Frame must be a grayscale or BGR image")
-        if frame.ndim == 3:
-            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        else:
-            frame_gray = frame
+        with timed_event("frame_process", self.telemetry, {"frame_id": self._frame_id}):
+            if frame.ndim == 3:
+                frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            else:
+                frame_gray = frame
 
-        kp, desc = self.feature_pipeline.detect_and_describe(frame_gray)
+            with timed_event(
+                "feature_detect",
+                self.telemetry,
+                {"frame_id": self._frame_id},
+            ):
+                kp, desc = self.feature_pipeline.detect_and_describe(frame_gray)
         if self._prev_frame is None:
             self._prev_frame = frame_gray
             self._prev_kp = kp
@@ -112,7 +124,8 @@ class SLAMSystem:
             self._append_pose(timestamp, method="bootstrap", match_count=0, inliers=0)
             return self._current_pose.copy()
 
-        matches = self.feature_pipeline.match(self._prev_desc, desc)
+        with timed_event("feature_match", self.telemetry, {"frame_id": self._frame_id}):
+            matches = self.feature_pipeline.match(self._prev_desc, desc)
         if len(matches) < self.config.pose_config.min_matches:
             LOGGER.warning("Frame %d rejected: not enough matches", self._frame_id)
             self._prev_frame = frame_gray
@@ -121,12 +134,17 @@ class SLAMSystem:
             self._append_pose(timestamp, method="insufficient_matches", match_count=len(matches), inliers=0)
             return self._current_pose.copy()
 
-        pose_estimate = self.pose_estimator.estimate_pose(
-            kp1=self._prev_kp or [],
-            kp2=kp,
-            matches=matches,
-            intrinsics=self.config.intrinsics,
-        )
+        with timed_event(
+            "pose_estimate",
+            self.telemetry,
+            {"frame_id": self._frame_id, "match_count": len(matches)},
+        ):
+            pose_estimate = self.pose_estimator.estimate_pose(
+                kp1=self._prev_kp or [],
+                kp2=kp,
+                matches=matches,
+                intrinsics=self.config.intrinsics,
+            )
         relative_pose = np.eye(4)
         relative_pose[:3, :3] = pose_estimate.rotation
         relative_pose[:3, 3] = pose_estimate.translation
@@ -165,11 +183,14 @@ class SLAMSystem:
             ),
         )
         diagnostics_path = self.data_store.save_frame_diagnostics(diagnostics_bundle)
+        if isinstance(self.telemetry, RunTelemetryRecorder):
+            self.telemetry.flush()
         return SLAMRunResult(
             run_dir=self.data_store.metadata.run_dir,
             trajectory_path=trajectory_path,
             metrics_path=metrics_path,
             diagnostics_path=diagnostics_path,
+            telemetry_path=self.telemetry.path if isinstance(self.telemetry, RunTelemetryRecorder) else None,
             frame_diagnostics=tuple(self.frame_diagnostics),
         )
 
@@ -216,3 +237,16 @@ class SLAMSystem:
             )
         )
         self._frame_id += 1
+
+    def _build_telemetry_sink(self) -> TelemetrySink:
+        if self.config.telemetry_sink is not None:
+            return self.config.telemetry_sink
+        if not self.config.enable_telemetry:
+            return _NullTelemetrySink()
+        telemetry_path = self.data_store.telemetry_path(self.config.telemetry_name)
+        return RunTelemetryRecorder(telemetry_path)
+
+
+class _NullTelemetrySink:
+    def record_event(self, event: Any) -> None:
+        return None
