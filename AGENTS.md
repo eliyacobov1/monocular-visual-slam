@@ -62,15 +62,21 @@ See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
 ## Task Completion Updates
 - ✅ **SLAM API Wrapper**: Added telemetry instrumentation with persisted timing
   artifacts and flush-on-finalize behavior for reproducible runs.
+- ✅ **Telemetry Aggregation**: Added per-stage timing summaries in the
+  evaluation harness with aggregate and per-sequence telemetry reporting.
 
 ## Next-Gen Follow-up Tasks
-- Aggregate telemetry into evaluation reports with per-stage timing summaries
-  and regression thresholds for performance drift.
 - Add configurable telemetry sampling/decimation for long KITTI sequences to
   control artifact sizes while retaining trends.
 - Implement pluggable telemetry sinks (JSONL streaming, Prometheus) for
   large-scale experimentation and CI dashboards.
+- Add regression thresholds for telemetry latency drift alongside ATE/RPE
+  baseline checks.
+- Build a telemetry report aggregator that fuses timing summaries with
+  per-sequence error diagnostics for richer evaluations.
+- Add a CLI to compare telemetry summaries across runs and export CSV
+  dashboards for experiment tracking.
 
 ## Technical Debt Log
-- Telemetry recorder currently stores events in memory before flushing; add a
-  streaming writer to reduce memory usage on long sequences.
+- Telemetry aggregation currently loads events into memory; add a streaming
+  summarizer to reduce memory usage on long sequences.

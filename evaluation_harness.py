@@ -61,6 +61,7 @@ class EvaluationConfig:
     config_hash: str
     resolved_config: dict[str, Any]
     pipeline_config: dict[str, Any] | None
+    telemetry_name: str
     baseline_store: Path | None
     baseline_key: str | None
     baseline_thresholds: dict[str, float] | None
@@ -137,6 +138,10 @@ def _normalize_config(raw: dict[str, Any]) -> dict[str, Any]:
             "use_run_subdir",
             raw.get("use_run_subdir", False),
         )
+        telemetry_name = run_section.get(
+            "telemetry_name",
+            raw.get("telemetry_name", eval_section.get("telemetry_name", "slam_telemetry")),
+        )
         merged = dict(eval_section)
         merged.update(
             {
@@ -145,6 +150,7 @@ def _normalize_config(raw: dict[str, Any]) -> dict[str, Any]:
                 "seed": seed,
                 "run_id": run_id,
                 "use_run_subdir": use_run_subdir,
+                "telemetry_name": telemetry_name,
             }
         )
         merged["pipeline"] = raw.get("pipeline")
@@ -224,6 +230,7 @@ def load_config(config_path: Path) -> EvaluationConfig:
         }
         for entry in trajectories
     ]
+    telemetry_name = str(normalized.get("telemetry_name", "slam_telemetry"))
     resolved_config = {
         "run_id": run_id,
         "dataset": dataset,
@@ -232,6 +239,7 @@ def load_config(config_path: Path) -> EvaluationConfig:
         "use_run_subdir": use_run_subdir,
         "trajectories": resolved_trajectories,
         "config_hash": config_hash,
+        "telemetry_name": telemetry_name,
     }
     pipeline_config = normalized.get("pipeline")
     if pipeline_config:
@@ -256,6 +264,7 @@ def load_config(config_path: Path) -> EvaluationConfig:
         config_hash=config_hash,
         resolved_config=resolved_config,
         pipeline_config=pipeline_config,
+        telemetry_name=telemetry_name,
         baseline_store=_resolve_path(baseline_store, base_dir) if baseline_store else None,
         baseline_key=str(baseline_key) if baseline_key else None,
         baseline_thresholds=baseline_thresholds,
@@ -320,6 +329,52 @@ def _aggregate_metrics(per_sequence: dict[str, dict[str, float]]) -> dict[str, f
     return metrics
 
 
+def _load_telemetry_events(path: Path) -> list[dict[str, Any]]:
+    payload = _load_json(path)
+    events = payload.get("events", [])
+    if not isinstance(events, list):
+        raise ValueError(f"Telemetry payload at {path} is missing 'events' list")
+    return events
+
+
+def _summarize_telemetry_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    durations: dict[str, list[float]] = {}
+    total_events = 0
+    total_duration = 0.0
+    for event in events:
+        name = str(event.get("name", "unknown"))
+        duration = float(event.get("duration_s", 0.0))
+        durations.setdefault(name, []).append(duration)
+        total_events += 1
+        total_duration += duration
+
+    per_stage: dict[str, dict[str, float]] = {}
+    for name, values in durations.items():
+        arr = np.array(values, dtype=np.float64)
+        if arr.size == 0:
+            continue
+        per_stage[name] = {
+            "count": int(arr.size),
+            "total_duration_s": float(np.sum(arr)),
+            "mean_duration_s": float(np.mean(arr)),
+            "min_duration_s": float(np.min(arr)),
+            "max_duration_s": float(np.max(arr)),
+            "p95_duration_s": float(np.percentile(arr, 95)),
+        }
+
+    mean_duration = total_duration / total_events if total_events > 0 else 0.0
+    return {
+        "event_count": total_events,
+        "total_duration_s": float(total_duration),
+        "mean_duration_s": float(mean_duration),
+        "per_stage": per_stage,
+    }
+
+
+def _resolve_telemetry_path(run_dir: Path, telemetry_name: str) -> Path:
+    return run_dir / "telemetry" / f"{telemetry_name}.json"
+
+
 def _write_summary_csv(path: Path, per_sequence: dict[str, dict[str, float]], aggregate: dict[str, float]) -> None:
     lines = ["sequence,metric,value"]
     for sequence, metrics in per_sequence.items():
@@ -345,11 +400,23 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
 
     per_sequence_metrics: dict[str, dict[str, float]] = {}
     per_sequence_reports: dict[str, dict[str, Any]] = {}
+    telemetry_events: list[dict[str, Any]] = []
+    per_sequence_telemetry: dict[str, dict[str, Any]] = {}
 
     LOGGER.info("Starting evaluation run %s", config.run_id)
     for entry in config.trajectories:
         LOGGER.info("Evaluating sequence %s", entry.name)
         payload = _evaluate_entry(entry)
+        if entry.est_run_dir:
+            telemetry_path = _resolve_telemetry_path(entry.est_run_dir, config.telemetry_name)
+            if telemetry_path.exists():
+                events = _load_telemetry_events(telemetry_path)
+                per_sequence_telemetry[entry.name] = _summarize_telemetry_events(events)
+                telemetry_events.extend(events)
+            else:
+                LOGGER.warning("Telemetry file not found for %s at %s", entry.name, telemetry_path)
+        if entry.name in per_sequence_telemetry:
+            payload["telemetry"] = per_sequence_telemetry[entry.name]
         per_sequence_reports[entry.name] = payload
         metrics = payload["metrics"]
         per_sequence_metrics[entry.name] = metrics
@@ -360,6 +427,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         write_csv_report(report_base.with_suffix(".csv"), payload)
 
     aggregate = _aggregate_metrics(per_sequence_metrics)
+    telemetry_summary = _summarize_telemetry_events(telemetry_events) if telemetry_events else {}
     summary = {
         "run_id": config.run_id,
         "dataset": config.dataset,
@@ -370,6 +438,8 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         "run_dir": str(output_dir),
         "run_metadata": str(artifacts.metadata_path),
         "aggregate_metrics": aggregate,
+        "telemetry_summary": telemetry_summary,
+        "telemetry_per_sequence": per_sequence_telemetry,
         "per_sequence": per_sequence_reports,
     }
 
