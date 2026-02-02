@@ -16,6 +16,7 @@ from data_persistence import (
     build_frame_diagnostics_bundle,
     build_metrics_bundle,
     load_trajectory_npz,
+    trajectory_artifact_path,
     trajectory_positions,
 )
 
@@ -108,3 +109,10 @@ def test_load_trajectory_npz_positions(tmp_path: Path) -> None:
     assert positions.shape == (2, 2)
     assert positions[1, 0] == 2.0
     assert positions[1, 1] == 1.0
+
+
+def test_trajectory_artifact_path_sanitizes_name(tmp_path: Path) -> None:
+    path = trajectory_artifact_path(tmp_path, "slam run/01")
+
+    assert path.parent == tmp_path / "trajectories"
+    assert path.name == "slam_run_01.npz"

@@ -9,6 +9,7 @@ import numpy as np
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from evaluation_harness import load_config, run_evaluation
+from data_persistence import trajectory_artifact_path
 
 
 def _write_traj(path: Path, points: list[tuple[float, float]]) -> None:
@@ -148,4 +149,48 @@ def test_evaluation_harness_with_slam_npz(tmp_path: Path) -> None:
     summary = run_evaluation(eval_config)
 
     assert summary["run_id"] == "unit_npz"
+    assert "slam_run" in summary["per_sequence"]
+
+
+def test_evaluation_harness_with_run_dir_npz(tmp_path: Path) -> None:
+    gt_path = tmp_path / "gt.txt"
+    _write_traj(gt_path, [(0.0, 0.0), (1.0, 0.0)])
+
+    run_dir = tmp_path / "slam_run"
+    trajectory_path = trajectory_artifact_path(run_dir, "slam trajectory 01")
+    trajectory_path.parent.mkdir(parents=True, exist_ok=True)
+    poses = np.repeat(np.eye(4)[None, ...], 2, axis=0)
+    poses[1, 0, 3] = 1.0
+    np.savez_compressed(
+        trajectory_path,
+        poses=poses,
+        timestamps=np.array([0.0, 1.0]),
+        frame_ids=np.array([0, 1]),
+    )
+
+    config = {
+        "run_id": "unit_run_dir",
+        "dataset": "custom",
+        "seed": 0,
+        "output_dir": str(tmp_path / "reports"),
+        "trajectories": [
+            {
+                "name": "slam_run",
+                "gt_path": str(gt_path),
+                "est_run_dir": str(run_dir),
+                "est_trajectory": "slam trajectory 01",
+                "format": "xy",
+                "cols": "0,1",
+                "rpe_delta": 1,
+            }
+        ],
+    }
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    eval_config = load_config(config_path)
+    summary = run_evaluation(eval_config)
+
+    assert summary["run_id"] == "unit_run_dir"
     assert "slam_run" in summary["per_sequence"]
