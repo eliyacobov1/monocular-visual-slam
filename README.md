@@ -296,3 +296,34 @@ The API writes trajectories, metrics, and per-frame diagnostics (including
 match/inlier counts, inlier ratio, parallax, and model score) into
 `reports/<run_id>/` by default, while keeping run metadata reproducible and
 inspectable.
+
+### CLI: Run KITTI sequences with the SLAM API
+
+Use `slam_runner.py` to run the high-level SLAM API against a KITTI sequence
+and persist trajectories, metrics, and diagnostics:
+
+```bash
+python slam_runner.py \
+  --root /path/to/kitti \
+  --sequence 00 \
+  --camera image_2 \
+  --config configs/slam_pipeline.json \
+  --output_dir reports \
+  --run_id kitti_00_slam \
+  --use_run_subdir
+```
+
+Pipeline configuration file schema:
+
+```json
+{
+  "feature_config": {
+    "nfeatures": 1500,
+    "scale_factor": 1.2
+  },
+  "pose_config": {
+    "min_matches": 40,
+    "min_inlier_ratio": 0.3
+  }
+}
+```
