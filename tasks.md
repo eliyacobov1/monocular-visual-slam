@@ -50,3 +50,19 @@
   streaming summarizer to handle very long runs without memory pressure.
 - Diagnostics summarization currently assumes full-frame diagnostics are loaded
   into memory; migrate to a streaming summarizer for very long runs.
+
+## Project Status (Interview Readiness)
+**Status**: Partial. Core pipeline, diagnostics, and evaluation are strong, but
+regression gates and scalable summarization still need to mature.
+
+## Minimal Gaps Checklist
+- ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
+- ⏳ Streaming diagnostics + telemetry summarizers for long KITTI runs.
+- ⏳ Regression gate thresholds for diagnostics metrics alongside ATE/RPE.
+- ⏳ CI-ready benchmark harness wiring for performance regression detection.
+
+## Follow-up Tasks (Post-Implementation)
+- Add a streaming diagnostics summarizer that produces status/failure metrics
+  without loading full payloads into memory.
+- Extend regression gate configs to enforce diagnostics status/failure ratios.
+- Build a CLI to compare diagnostics status/failure distributions across runs.

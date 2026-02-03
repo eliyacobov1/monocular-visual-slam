@@ -58,6 +58,8 @@ class FrameDiagnostics:
     inlier_ratio: float
     median_parallax: float
     score: float
+    status: str
+    failure_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -121,7 +123,14 @@ class SLAMSystem:
             self._prev_frame = frame_gray
             self._prev_kp = kp
             self._prev_desc = desc
-            self._append_pose(timestamp, method="bootstrap", match_count=0, inliers=0)
+            self._append_pose(
+                timestamp,
+                method="bootstrap",
+                match_count=0,
+                inliers=0,
+                status="bootstrap",
+                failure_reason=None,
+            )
             return self._current_pose.copy()
 
         with timed_event("feature_match", self.telemetry, {"frame_id": self._frame_id}):
@@ -131,20 +140,35 @@ class SLAMSystem:
             self._prev_frame = frame_gray
             self._prev_kp = kp
             self._prev_desc = desc
-            self._append_pose(timestamp, method="insufficient_matches", match_count=len(matches), inliers=0)
+            self._append_pose(
+                timestamp,
+                method="insufficient_matches",
+                match_count=len(matches),
+                inliers=0,
+                status="skipped",
+                failure_reason="min_matches",
+            )
             return self._current_pose.copy()
 
-        with timed_event(
-            "pose_estimate",
-            self.telemetry,
-            {"frame_id": self._frame_id, "match_count": len(matches)},
-        ):
-            pose_estimate = self.pose_estimator.estimate_pose(
-                kp1=self._prev_kp or [],
-                kp2=kp,
-                matches=matches,
-                intrinsics=self.config.intrinsics,
-            )
+        try:
+            with timed_event(
+                "pose_estimate",
+                self.telemetry,
+                {"frame_id": self._frame_id, "match_count": len(matches)},
+            ):
+                pose_estimate = self.pose_estimator.estimate_pose(
+                    kp1=self._prev_kp or [],
+                    kp2=kp,
+                    matches=matches,
+                    intrinsics=self.config.intrinsics,
+                )
+        except Exception as exc:
+            LOGGER.exception("Pose estimation failed for frame %d", self._frame_id)
+            self._prev_frame = frame_gray
+            self._prev_kp = kp
+            self._prev_desc = desc
+            self._append_pose_failure(timestamp, exc)
+            return self._current_pose.copy()
         relative_pose = np.eye(4)
         relative_pose[:3, :3] = pose_estimate.rotation
         relative_pose[:3, 3] = pose_estimate.translation
@@ -178,6 +202,8 @@ class SLAMSystem:
                     inlier_ratio=entry.inlier_ratio,
                     median_parallax=entry.median_parallax,
                     score=entry.score,
+                    status=entry.status,
+                    failure_reason=entry.failure_reason,
                 )
                 for entry in self.frame_diagnostics
             ),
@@ -201,6 +227,8 @@ class SLAMSystem:
         method: str,
         match_count: int,
         inliers: int,
+        status: str,
+        failure_reason: str | None,
     ) -> None:
         self.trajectory.append(self._current_pose.copy(), timestamp, self._frame_id)
         inlier_ratio = 0.0 if match_count <= 0 else float(inliers) / float(match_count)
@@ -214,6 +242,8 @@ class SLAMSystem:
                 inlier_ratio=float(inlier_ratio),
                 median_parallax=0.0,
                 score=0.0,
+                status=str(status),
+                failure_reason=failure_reason,
             )
         )
         self._frame_id += 1
@@ -234,9 +264,22 @@ class SLAMSystem:
                 inlier_ratio=float(diagnostics.inlier_ratio),
                 median_parallax=float(diagnostics.median_parallax),
                 score=float(diagnostics.score),
+                status="ok",
+                failure_reason=None,
             )
         )
         self._frame_id += 1
+
+    def _append_pose_failure(self, timestamp: float, error: Exception) -> None:
+        failure_reason = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+        self._append_pose(
+            timestamp,
+            method="pose_failure",
+            match_count=0,
+            inliers=0,
+            status="failure",
+            failure_reason=failure_reason,
+        )
 
     def _build_telemetry_sink(self) -> TelemetrySink:
         if self.config.telemetry_sink is not None:

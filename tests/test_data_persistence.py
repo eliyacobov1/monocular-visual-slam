@@ -64,6 +64,8 @@ def test_run_data_store_roundtrip(tmp_path: Path) -> None:
                 inlier_ratio=0.0,
                 median_parallax=0.0,
                 score=0.0,
+                status="bootstrap",
+                failure_reason=None,
             ),
             FrameDiagnosticsEntry(
                 frame_id=1,
@@ -74,6 +76,8 @@ def test_run_data_store_roundtrip(tmp_path: Path) -> None:
                 inlier_ratio=0.8,
                 median_parallax=1.5,
                 score=1.2,
+                status="ok",
+                failure_reason=None,
             ),
         ],
     )
@@ -137,6 +141,8 @@ def test_frame_diagnostics_roundtrip_and_summary(tmp_path: Path) -> None:
                 "inlier_ratio": 0.75,
                 "median_parallax": 1.2,
                 "score": 0.9,
+                "status": "ok",
+                "failure_reason": None,
             },
             {
                 "frame_id": 1,
@@ -147,6 +153,8 @@ def test_frame_diagnostics_roundtrip_and_summary(tmp_path: Path) -> None:
                 "inlier_ratio": 0.6,
                 "median_parallax": 0.8,
                 "score": 0.7,
+                "status": "ok",
+                "failure_reason": None,
             },
         ],
     }
