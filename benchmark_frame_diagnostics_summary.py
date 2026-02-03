@@ -36,6 +36,8 @@ def _generate_entries(size: int) -> tuple[FrameDiagnosticsEntry, ...]:
             inlier_ratio=float(ratios[idx]),
             median_parallax=float(parallaxes[idx]),
             score=float(scores[idx]),
+            status="ok",
+            failure_reason=None,
         )
         for idx in range(size)
     )

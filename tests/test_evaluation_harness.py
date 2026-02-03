@@ -228,6 +228,8 @@ def test_evaluation_harness_with_diagnostics_summary(tmp_path: Path) -> None:
                 inlier_ratio=0.75,
                 median_parallax=1.2,
                 score=0.9,
+                status="ok",
+                failure_reason=None,
             ),
             FrameDiagnosticsEntry(
                 frame_id=1,
@@ -238,6 +240,8 @@ def test_evaluation_harness_with_diagnostics_summary(tmp_path: Path) -> None:
                 inlier_ratio=0.6,
                 median_parallax=0.8,
                 score=0.7,
+                status="ok",
+                failure_reason=None,
             ),
         ],
     )
@@ -258,6 +262,8 @@ def test_evaluation_harness_with_diagnostics_summary(tmp_path: Path) -> None:
                         "inlier_ratio": entry.inlier_ratio,
                         "median_parallax": entry.median_parallax,
                         "score": entry.score,
+                        "status": entry.status,
+                        "failure_reason": entry.failure_reason,
                     }
                     for entry in diagnostics_bundle.entries
                 ],

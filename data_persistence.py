@@ -63,6 +63,8 @@ class FrameDiagnosticsEntry:
     inlier_ratio: float
     median_parallax: float
     score: float
+    status: str
+    failure_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -246,6 +248,8 @@ class RunDataStore:
                     "inlier_ratio": entry.inlier_ratio,
                     "median_parallax": entry.median_parallax,
                     "score": entry.score,
+                    "status": entry.status,
+                    "failure_reason": entry.failure_reason,
                 }
                 for entry in bundle.entries
             ],
@@ -302,6 +306,8 @@ class RunDataStore:
                 inlier_ratio=float(entry.get("inlier_ratio", 0.0)),
                 median_parallax=float(entry.get("median_parallax", 0.0)),
                 score=float(entry.get("score", 0.0)),
+                status=str(entry.get("status", "unknown")),
+                failure_reason=entry.get("failure_reason"),
             )
             for entry in entries_payload
         )
@@ -486,6 +492,8 @@ def load_frame_diagnostics_json(
             inlier_ratio=float(entry.get("inlier_ratio", 0.0)),
             median_parallax=float(entry.get("median_parallax", 0.0)),
             score=float(entry.get("score", 0.0)),
+            status=str(entry.get("status", "unknown")),
+            failure_reason=entry.get("failure_reason"),
         )
         for entry in entries_payload
     )
@@ -507,6 +515,12 @@ def summarize_frame_diagnostics(bundle: FrameDiagnosticsBundle) -> dict[str, flo
     parallaxes = np.array([entry.median_parallax for entry in bundle.entries], dtype=float)
     scores = np.array([entry.score for entry in bundle.entries], dtype=float)
     method_counts = Counter(entry.method or "unknown" for entry in bundle.entries)
+    status_counts = Counter(entry.status or "unknown" for entry in bundle.entries)
+    failure_counts = Counter(
+        entry.failure_reason or "unknown"
+        for entry in bundle.entries
+        if entry.failure_reason
+    )
     total = float(len(bundle.entries))
 
     metrics: dict[str, float] = {
@@ -521,6 +535,16 @@ def summarize_frame_diagnostics(bundle: FrameDiagnosticsBundle) -> dict[str, flo
         safe_method = sanitize_artifact_name(method)
         metrics[f"diag_method_{safe_method}_count"] = float(count)
         metrics[f"diag_method_{safe_method}_ratio"] = float(count / total)
+    for status, count in status_counts.items():
+        safe_status = sanitize_artifact_name(status)
+        metrics[f"diag_status_{safe_status}_count"] = float(count)
+        metrics[f"diag_status_{safe_status}_ratio"] = float(count / total)
+    if failure_counts:
+        failures_total = float(sum(failure_counts.values()))
+        for reason, count in failure_counts.items():
+            safe_reason = sanitize_artifact_name(reason)
+            metrics[f"diag_failure_{safe_reason}_count"] = float(count)
+            metrics[f"diag_failure_{safe_reason}_ratio"] = float(count / failures_total)
     return metrics
 
 

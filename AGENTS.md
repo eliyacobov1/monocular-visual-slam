@@ -91,3 +91,20 @@ See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
   summarizer to reduce memory usage on long sequences.
 - Diagnostics summarization currently loads full frame diagnostics into memory;
   add a streaming summarizer for very long runs.
+
+## Project Status (Interview Readiness)
+**Status**: Partial. The pipeline has solid diagnostics, persistence, and
+evaluation tooling, but still needs stronger regression gates and scalable
+summarization to be fully senior-grade.
+
+## Minimal Gaps Checklist
+- ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
+- ⏳ Streaming diagnostics + telemetry summarizers for long KITTI runs.
+- ⏳ Regression gate thresholds for diagnostics metrics alongside ATE/RPE.
+- ⏳ CI-ready benchmark harness wiring for performance regression detection.
+
+## Follow-up Tasks (Post-Implementation)
+- Add streaming diagnostics summarization for long runs with bounded memory
+  usage.
+- Introduce diagnostics regression thresholds in the regression gate configs.
+- Add a CLI to compare diagnostics status/failure trends across runs.

@@ -298,9 +298,9 @@ slam = SLAMSystem(config)
 ```
 
 The API writes trajectories, metrics, and per-frame diagnostics (including
-match/inlier counts, inlier ratio, parallax, and model score) into
-`reports/<run_id>/` by default, while keeping run metadata reproducible and
-inspectable. It also emits a telemetry JSON file under
+match/inlier counts, inlier ratio, parallax, model score, and status/failure
+metadata) into `reports/<run_id>/` by default, while keeping run metadata
+reproducible and inspectable. It also emits a telemetry JSON file under
 `reports/<run_id>/telemetry/` with per-stage timing for feature detection,
 matching, and pose estimation.
 
