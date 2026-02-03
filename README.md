@@ -186,6 +186,11 @@ optional `est_trajectory` override (defaults to the entry `name`):
 }
 ```
 
+When `est_run_dir` is provided and a `diagnostics/frame_diagnostics.json` file
+is present, the evaluation harness will attach a per-sequence diagnostics
+summary to the report payload and merge the diagnostic metrics (e.g., mean
+inlier ratio, method selection ratios) into the sequence metrics.
+
 You can also use `kitti_dataset.py` directly to iterate frames and parse
 calibration.
 

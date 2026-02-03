@@ -15,7 +15,10 @@ from data_persistence import (
     RunDataStore,
     build_frame_diagnostics_bundle,
     build_metrics_bundle,
+    frame_diagnostics_artifact_path,
+    load_frame_diagnostics_json,
     load_trajectory_npz,
+    summarize_frame_diagnostics,
     trajectory_artifact_path,
     trajectory_positions,
 )
@@ -116,3 +119,43 @@ def test_trajectory_artifact_path_sanitizes_name(tmp_path: Path) -> None:
 
     assert path.parent == tmp_path / "trajectories"
     assert path.name == "slam_run_01.npz"
+
+
+def test_frame_diagnostics_roundtrip_and_summary(tmp_path: Path) -> None:
+    diagnostics_path = frame_diagnostics_artifact_path(tmp_path, "frame_diagnostics")
+    diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "name": "frame_diagnostics",
+        "recorded_at": "2024-01-01T00:00:00Z",
+        "entries": [
+            {
+                "frame_id": 0,
+                "timestamp": 0.0,
+                "match_count": 12,
+                "inliers": 9,
+                "method": "essential",
+                "inlier_ratio": 0.75,
+                "median_parallax": 1.2,
+                "score": 0.9,
+            },
+            {
+                "frame_id": 1,
+                "timestamp": 1.0,
+                "match_count": 10,
+                "inliers": 6,
+                "method": "homography",
+                "inlier_ratio": 0.6,
+                "median_parallax": 0.8,
+                "score": 0.7,
+            },
+        ],
+    }
+    diagnostics_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    bundle = load_frame_diagnostics_json(diagnostics_path)
+    summary = summarize_frame_diagnostics(bundle)
+
+    assert bundle.name == "frame_diagnostics"
+    assert summary["diag_frame_count"] == 2.0
+    assert summary["diag_method_essential_count"] == 1.0
+    assert summary["diag_method_homography_ratio"] == 0.5

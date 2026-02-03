@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence, TYPE_CHECKING
+from collections import Counter
 
 import numpy as np
 
@@ -389,6 +390,13 @@ def trajectory_artifact_path(run_dir: Path, name: str) -> Path:
     return Path(run_dir) / "trajectories" / f"{safe_name}.npz"
 
 
+def frame_diagnostics_artifact_path(run_dir: Path, name: str) -> Path:
+    """Return the expected frame diagnostics artifact path for a run directory."""
+
+    safe_name = sanitize_artifact_name(name)
+    return Path(run_dir) / "diagnostics" / f"{safe_name}.json"
+
+
 def build_metrics_bundle(name: str, metrics: Mapping[str, float]) -> MetricsBundle:
     """Build a metrics bundle with a current timestamp."""
 
@@ -450,6 +458,70 @@ def load_trajectory_npz(path: Path, name: str | None = None) -> TrajectoryBundle
     )
     RunDataStore._validate_trajectory(bundle)
     return bundle
+
+
+def load_frame_diagnostics_json(
+    path: Path,
+    name: str | None = None,
+) -> FrameDiagnosticsBundle:
+    """Load a frame diagnostics bundle from a persisted json file."""
+
+    if not path.exists():
+        raise FileNotFoundError(f"Frame diagnostics file not found: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.exception("Failed to read frame diagnostics '%s'", path)
+        raise RuntimeError("Failed to read frame diagnostics") from exc
+    entries_payload = payload.get("entries", [])
+    if not entries_payload:
+        raise ValueError("Frame diagnostics payload is empty")
+    entries = tuple(
+        FrameDiagnosticsEntry(
+            frame_id=int(entry.get("frame_id", 0)),
+            timestamp=float(entry.get("timestamp", 0.0)),
+            match_count=int(entry.get("match_count", 0)),
+            inliers=int(entry.get("inliers", 0)),
+            method=str(entry.get("method", "")),
+            inlier_ratio=float(entry.get("inlier_ratio", 0.0)),
+            median_parallax=float(entry.get("median_parallax", 0.0)),
+            score=float(entry.get("score", 0.0)),
+        )
+        for entry in entries_payload
+    )
+    return FrameDiagnosticsBundle(
+        name=str(payload.get("name", name or path.stem)),
+        entries=entries,
+        recorded_at=str(payload.get("recorded_at", _timestamp())),
+    )
+
+
+def summarize_frame_diagnostics(bundle: FrameDiagnosticsBundle) -> dict[str, float]:
+    """Summarize frame diagnostics statistics for evaluation reports."""
+
+    if not bundle.entries:
+        raise ValueError("Frame diagnostics bundle must include entries")
+    match_counts = np.array([entry.match_count for entry in bundle.entries], dtype=float)
+    inliers = np.array([entry.inliers for entry in bundle.entries], dtype=float)
+    inlier_ratios = np.array([entry.inlier_ratio for entry in bundle.entries], dtype=float)
+    parallaxes = np.array([entry.median_parallax for entry in bundle.entries], dtype=float)
+    scores = np.array([entry.score for entry in bundle.entries], dtype=float)
+    method_counts = Counter(entry.method or "unknown" for entry in bundle.entries)
+    total = float(len(bundle.entries))
+
+    metrics: dict[str, float] = {
+        "diag_frame_count": total,
+        "diag_match_mean": float(match_counts.mean()),
+        "diag_inlier_mean": float(inliers.mean()),
+        "diag_inlier_ratio_mean": float(inlier_ratios.mean()),
+        "diag_parallax_median": float(np.median(parallaxes)),
+        "diag_score_mean": float(scores.mean()),
+    }
+    for method, count in method_counts.items():
+        safe_method = sanitize_artifact_name(method)
+        metrics[f"diag_method_{safe_method}_count"] = float(count)
+        metrics[f"diag_method_{safe_method}_ratio"] = float(count / total)
+    return metrics
 
 
 def trajectory_positions(

@@ -18,7 +18,10 @@ import numpy as np
 from experiment_registry import create_run_artifacts, write_resolved_config
 from regression_baselines import compare_metrics, load_baseline_store, upsert_baseline
 from data_persistence import (
+    frame_diagnostics_artifact_path,
     load_trajectory_npz,
+    load_frame_diagnostics_json,
+    summarize_frame_diagnostics,
     trajectory_artifact_path,
     trajectory_positions,
 )
@@ -321,10 +324,14 @@ def _evaluate_entry(entry: TrajectoryEntry) -> dict[str, Any]:
 def _aggregate_metrics(per_sequence: dict[str, dict[str, float]]) -> dict[str, float]:
     if not per_sequence:
         return {}
-    metrics = {}
-    keys = list(next(iter(per_sequence.values())).keys())
-    for key in keys:
-        values = [seq_metrics[key] for seq_metrics in per_sequence.values()]
+    metrics: dict[str, float] = {}
+    keys: set[str] = set()
+    for seq_metrics in per_sequence.values():
+        keys.update(seq_metrics.keys())
+    for key in sorted(keys):
+        values = [seq_metrics[key] for seq_metrics in per_sequence.values() if key in seq_metrics]
+        if not values:
+            continue
         metrics[key] = float(np.mean(values))
     return metrics
 
@@ -375,6 +382,10 @@ def _resolve_telemetry_path(run_dir: Path, telemetry_name: str) -> Path:
     return run_dir / "telemetry" / f"{telemetry_name}.json"
 
 
+def _resolve_diagnostics_path(run_dir: Path, name: str) -> Path:
+    return frame_diagnostics_artifact_path(run_dir, name)
+
+
 def _write_summary_csv(path: Path, per_sequence: dict[str, dict[str, float]], aggregate: dict[str, float]) -> None:
     lines = ["sequence,metric,value"]
     for sequence, metrics in per_sequence.items():
@@ -415,6 +426,18 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
                 telemetry_events.extend(events)
             else:
                 LOGGER.warning("Telemetry file not found for %s at %s", entry.name, telemetry_path)
+            diagnostics_path = _resolve_diagnostics_path(entry.est_run_dir, "frame_diagnostics")
+            if diagnostics_path.exists():
+                diagnostics_bundle = load_frame_diagnostics_json(diagnostics_path)
+                diagnostics_summary = summarize_frame_diagnostics(diagnostics_bundle)
+                payload["diagnostics_summary"] = diagnostics_summary
+                payload["metrics"] = {**payload["metrics"], **diagnostics_summary}
+            else:
+                LOGGER.warning(
+                    "Frame diagnostics not found for %s at %s",
+                    entry.name,
+                    diagnostics_path,
+                )
         if entry.name in per_sequence_telemetry:
             payload["telemetry"] = per_sequence_telemetry[entry.name]
         per_sequence_reports[entry.name] = payload
