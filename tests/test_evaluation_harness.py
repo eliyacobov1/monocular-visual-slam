@@ -9,7 +9,12 @@ import numpy as np
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from evaluation_harness import load_config, run_evaluation
-from data_persistence import trajectory_artifact_path
+from data_persistence import (
+    FrameDiagnosticsEntry,
+    build_frame_diagnostics_bundle,
+    frame_diagnostics_artifact_path,
+    trajectory_artifact_path,
+)
 
 
 def _write_traj(path: Path, points: list[tuple[float, float]]) -> None:
@@ -194,3 +199,96 @@ def test_evaluation_harness_with_run_dir_npz(tmp_path: Path) -> None:
 
     assert summary["run_id"] == "unit_run_dir"
     assert "slam_run" in summary["per_sequence"]
+
+
+def test_evaluation_harness_with_diagnostics_summary(tmp_path: Path) -> None:
+    gt_path = tmp_path / "gt.txt"
+    _write_traj(gt_path, [(0.0, 0.0), (1.0, 0.0)])
+
+    run_dir = tmp_path / "slam_run"
+    trajectory_path = trajectory_artifact_path(run_dir, "slam_run")
+    trajectory_path.parent.mkdir(parents=True, exist_ok=True)
+    poses = np.repeat(np.eye(4)[None, ...], 2, axis=0)
+    poses[1, 0, 3] = 1.0
+    np.savez_compressed(
+        trajectory_path,
+        poses=poses,
+        timestamps=np.array([0.0, 1.0]),
+        frame_ids=np.array([0, 1]),
+    )
+    diagnostics_bundle = build_frame_diagnostics_bundle(
+        "frame_diagnostics",
+        [
+            FrameDiagnosticsEntry(
+                frame_id=0,
+                timestamp=0.0,
+                match_count=12,
+                inliers=9,
+                method="essential",
+                inlier_ratio=0.75,
+                median_parallax=1.2,
+                score=0.9,
+            ),
+            FrameDiagnosticsEntry(
+                frame_id=1,
+                timestamp=1.0,
+                match_count=10,
+                inliers=6,
+                method="homography",
+                inlier_ratio=0.6,
+                median_parallax=0.8,
+                score=0.7,
+            ),
+        ],
+    )
+    diagnostics_path = frame_diagnostics_artifact_path(run_dir, diagnostics_bundle.name)
+    diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+    diagnostics_path.write_text(
+        json.dumps(
+            {
+                "name": diagnostics_bundle.name,
+                "recorded_at": diagnostics_bundle.recorded_at,
+                "entries": [
+                    {
+                        "frame_id": entry.frame_id,
+                        "timestamp": entry.timestamp,
+                        "match_count": entry.match_count,
+                        "inliers": entry.inliers,
+                        "method": entry.method,
+                        "inlier_ratio": entry.inlier_ratio,
+                        "median_parallax": entry.median_parallax,
+                        "score": entry.score,
+                    }
+                    for entry in diagnostics_bundle.entries
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = {
+        "run_id": "unit_diagnostics",
+        "dataset": "custom",
+        "seed": 0,
+        "output_dir": str(tmp_path / "reports"),
+        "trajectories": [
+            {
+                "name": "slam_run",
+                "gt_path": str(gt_path),
+                "est_run_dir": str(run_dir),
+                "format": "xy",
+                "cols": "0,1",
+                "rpe_delta": 1,
+            }
+        ],
+    }
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    eval_config = load_config(config_path)
+    summary = run_evaluation(eval_config)
+
+    per_sequence = summary["per_sequence"]["slam_run"]
+    assert "diagnostics_summary" in per_sequence
+    assert per_sequence["metrics"]["diag_frame_count"] == 2.0

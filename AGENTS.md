@@ -64,6 +64,9 @@ See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
   artifacts and flush-on-finalize behavior for reproducible runs.
 - ✅ **Telemetry Aggregation**: Added per-stage timing summaries in the
   evaluation harness with aggregate and per-sequence telemetry reporting.
+- ✅ **Robust Pose Diagnostics Integration**: Wired frame diagnostics summaries
+  into the evaluation harness so per-sequence reports include inlier/parallax
+  statistics and model-selection metrics from SLAM runs.
 
 ## Next-Gen Follow-up Tasks
 - Add configurable telemetry sampling/decimation for long KITTI sequences to
@@ -76,7 +79,15 @@ See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
   per-sequence error diagnostics for richer evaluations.
 - Add a CLI to compare telemetry summaries across runs and export CSV
   dashboards for experiment tracking.
+- Add diagnostics trend reporting that correlates per-frame inlier ratios with
+  ATE/RPE drift to flag degraded pose quality.
+- Introduce histogram-based diagnostics exports (JSON + CSV) for per-method
+  inlier distributions to support richer regression analysis.
+- Extend evaluation configs to optionally enforce diagnostics-based regression
+  thresholds alongside ATE/RPE gates.
 
 ## Technical Debt Log
 - Telemetry aggregation currently loads events into memory; add a streaming
   summarizer to reduce memory usage on long sequences.
+- Diagnostics summarization currently loads full frame diagnostics into memory;
+  add a streaming summarizer for very long runs.
