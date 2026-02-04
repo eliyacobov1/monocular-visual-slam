@@ -10,7 +10,11 @@ import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from evaluation_harness import _load_telemetry_events, _summarize_telemetry_events
+from evaluation_harness import (
+    _load_telemetry_events,
+    _summarize_telemetry_events,
+    _summarize_telemetry_streaming,
+)
 
 
 def test_summarize_telemetry_events() -> None:
@@ -40,3 +44,22 @@ def test_load_telemetry_events(tmp_path: Path) -> None:
 
     events = _load_telemetry_events(path)
     assert events == payload["events"]
+
+
+def test_summarize_telemetry_streaming(tmp_path: Path) -> None:
+    path = tmp_path / "telemetry.json"
+    payload = {
+        "recorded_at": "2024-01-01T00:00:00Z",
+        "events": [
+            {"name": "frame_process", "duration_s": 0.3},
+            {"name": "frame_process", "duration_s": 0.2},
+            {"name": "pose_opt", "duration_s": 0.5},
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = _summarize_telemetry_streaming(path)
+
+    assert summary["event_count"] == 3
+    assert np.isclose(summary["total_duration_s"], 1.0)
+    assert summary["per_stage"]["frame_process"]["count"] == 2

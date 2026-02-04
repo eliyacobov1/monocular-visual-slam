@@ -18,10 +18,13 @@ import numpy as np
 from experiment_registry import create_run_artifacts, write_resolved_config
 from regression_baselines import compare_metrics, load_baseline_store, upsert_baseline
 from data_persistence import (
+    P2Quantile,
     frame_diagnostics_artifact_path,
+    iter_json_array_items,
     load_trajectory_npz,
     load_frame_diagnostics_json,
     summarize_frame_diagnostics,
+    summarize_frame_diagnostics_streaming,
     trajectory_artifact_path,
     trajectory_positions,
 )
@@ -344,6 +347,81 @@ def _load_telemetry_events(path: Path) -> list[dict[str, Any]]:
     return events
 
 
+class _TelemetryStageStats:
+    def __init__(self) -> None:
+        self.count = 0
+        self.total_duration = 0.0
+        self.min_duration = float("inf")
+        self.max_duration = float("-inf")
+        self.p95 = P2Quantile(0.95)
+
+    def update(self, duration: float) -> None:
+        self.count += 1
+        self.total_duration += duration
+        self.min_duration = min(self.min_duration, duration)
+        self.max_duration = max(self.max_duration, duration)
+        self.p95.update(duration)
+
+    def summary(self) -> dict[str, float | int]:
+        if self.count == 0:
+            return {
+                "count": 0,
+                "total_duration_s": 0.0,
+                "mean_duration_s": 0.0,
+                "min_duration_s": 0.0,
+                "max_duration_s": 0.0,
+                "p95_duration_s": 0.0,
+            }
+        return {
+            "count": int(self.count),
+            "total_duration_s": float(self.total_duration),
+            "mean_duration_s": float(self.total_duration / self.count),
+            "min_duration_s": float(self.min_duration),
+            "max_duration_s": float(self.max_duration),
+            "p95_duration_s": float(self.p95.value()),
+        }
+
+
+class _TelemetryAccumulator:
+    def __init__(self) -> None:
+        self.total_events = 0
+        self.total_duration = 0.0
+        self.per_stage: dict[str, _TelemetryStageStats] = {}
+
+    def update(self, name: str, duration: float) -> None:
+        self.total_events += 1
+        self.total_duration += duration
+        stats = self.per_stage.get(name)
+        if stats is None:
+            stats = _TelemetryStageStats()
+            self.per_stage[name] = stats
+        stats.update(duration)
+
+    def summarize(self) -> dict[str, Any]:
+        per_stage = {name: stats.summary() for name, stats in self.per_stage.items()}
+        mean_duration = self.total_duration / self.total_events if self.total_events else 0.0
+        return {
+            "event_count": int(self.total_events),
+            "total_duration_s": float(self.total_duration),
+            "mean_duration_s": float(mean_duration),
+            "per_stage": per_stage,
+        }
+
+
+def _summarize_telemetry_streaming(
+    path: Path,
+    global_accumulator: _TelemetryAccumulator | None = None,
+) -> dict[str, Any]:
+    local_accumulator = _TelemetryAccumulator()
+    for event in iter_json_array_items(path, "events"):
+        name = str(event.get("name") or "unknown")
+        duration = float(event.get("duration_s", 0.0))
+        local_accumulator.update(name, duration)
+        if global_accumulator is not None:
+            global_accumulator.update(name, duration)
+    return local_accumulator.summarize()
+
+
 def _summarize_telemetry_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     durations: dict[str, list[float]] = {}
     total_events = 0
@@ -411,8 +489,8 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
 
     per_sequence_metrics: dict[str, dict[str, float]] = {}
     per_sequence_reports: dict[str, dict[str, Any]] = {}
-    telemetry_events: list[dict[str, Any]] = []
     per_sequence_telemetry: dict[str, dict[str, Any]] = {}
+    telemetry_accumulator = _TelemetryAccumulator()
 
     LOGGER.info("Starting evaluation run %s", config.run_id)
     for entry in config.trajectories:
@@ -421,15 +499,37 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         if entry.est_run_dir:
             telemetry_path = _resolve_telemetry_path(entry.est_run_dir, config.telemetry_name)
             if telemetry_path.exists():
-                events = _load_telemetry_events(telemetry_path)
-                per_sequence_telemetry[entry.name] = _summarize_telemetry_events(events)
-                telemetry_events.extend(events)
+                try:
+                    per_sequence_telemetry[entry.name] = _summarize_telemetry_streaming(
+                        telemetry_path,
+                        telemetry_accumulator,
+                    )
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    LOGGER.warning(
+                        "Streaming telemetry summary failed for %s (%s); falling back to in-memory",
+                        entry.name,
+                        exc,
+                    )
+                    events = _load_telemetry_events(telemetry_path)
+                    per_sequence_telemetry[entry.name] = _summarize_telemetry_events(events)
+                    for event in events:
+                        name = str(event.get("name") or "unknown")
+                        duration = float(event.get("duration_s", 0.0))
+                        telemetry_accumulator.update(name, duration)
             else:
                 LOGGER.warning("Telemetry file not found for %s at %s", entry.name, telemetry_path)
             diagnostics_path = _resolve_diagnostics_path(entry.est_run_dir, "frame_diagnostics")
             if diagnostics_path.exists():
-                diagnostics_bundle = load_frame_diagnostics_json(diagnostics_path)
-                diagnostics_summary = summarize_frame_diagnostics(diagnostics_bundle)
+                try:
+                    diagnostics_summary = summarize_frame_diagnostics_streaming(diagnostics_path)
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    LOGGER.warning(
+                        "Streaming diagnostics summary failed for %s (%s); falling back to in-memory",
+                        entry.name,
+                        exc,
+                    )
+                    diagnostics_bundle = load_frame_diagnostics_json(diagnostics_path)
+                    diagnostics_summary = summarize_frame_diagnostics(diagnostics_bundle)
                 payload["diagnostics_summary"] = diagnostics_summary
                 payload["metrics"] = {**payload["metrics"], **diagnostics_summary}
             else:
@@ -450,7 +550,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         write_csv_report(report_base.with_suffix(".csv"), payload)
 
     aggregate = _aggregate_metrics(per_sequence_metrics)
-    telemetry_summary = _summarize_telemetry_events(telemetry_events) if telemetry_events else {}
+    telemetry_summary = telemetry_accumulator.summarize() if telemetry_accumulator.total_events else {}
     summary = {
         "run_id": config.run_id,
         "dataset": config.dataset,
