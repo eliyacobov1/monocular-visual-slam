@@ -8,7 +8,12 @@ np = pytest.importorskip("numpy")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from kitti_dataset import KittiSequence, parse_kitti_calib_file, parse_kitti_timestamp
+from kitti_dataset import (
+    KittiSequence,
+    MultiCameraKittiSequence,
+    parse_kitti_calib_file,
+    parse_kitti_timestamp,
+)
 
 
 def _write_dummy_image(path: Path) -> None:
@@ -91,3 +96,65 @@ def test_kitti_raw_sequence_iteration_with_timestamps(tmp_path: Path) -> None:
     assert intrinsics is not None
     np.testing.assert_allclose(intrinsics[0, 0], 7.0)
     np.testing.assert_allclose(intrinsics[1, 1], 7.0)
+
+
+def test_multi_camera_kitti_sync_with_times(tmp_path: Path) -> None:
+    seq_root = tmp_path / "sequences" / "00"
+    image_dir_2 = seq_root / "image_2"
+    image_dir_3 = seq_root / "image_3"
+    image_dir_2.mkdir(parents=True)
+    image_dir_3.mkdir(parents=True)
+    _write_dummy_image(image_dir_2 / "000000.png")
+    _write_dummy_image(image_dir_2 / "000001.png")
+    _write_dummy_image(image_dir_3 / "000000.png")
+    _write_dummy_image(image_dir_3 / "000001.png")
+
+    (seq_root / "times.txt").write_text("0.0\n0.1\n")
+    (seq_root / "calib.txt").write_text(
+        "P2: 7 0 3 0 0 7 2 0 0 0 1 0\nP3: 7 0 3 0 0 7 2 0 0 0 1 -0.1\n"
+    )
+
+    multi = MultiCameraKittiSequence(
+        tmp_path,
+        "00",
+        cameras=["image_2", "image_3"],
+        reference_camera="image_2",
+    )
+    synced, report = multi.synchronize(tolerance_s=0.01)
+
+    assert report.ok
+    assert len(synced) == 2
+    assert report.metrics["num_synced_frames"] == 2.0
+
+
+def test_multi_camera_kitti_sync_drops_on_large_offset(tmp_path: Path) -> None:
+    seq_root = tmp_path / "2011_09_26" / "2011_09_26_drive_0001_sync"
+    image_dir_2 = seq_root / "image_02" / "data"
+    image_dir_3 = seq_root / "image_03" / "data"
+    image_dir_2.mkdir(parents=True)
+    image_dir_3.mkdir(parents=True)
+    _write_dummy_image(image_dir_2 / "0000000000.png")
+    _write_dummy_image(image_dir_2 / "0000000001.png")
+    _write_dummy_image(image_dir_3 / "0000000000.png")
+    _write_dummy_image(image_dir_3 / "0000000001.png")
+
+    (seq_root / "image_02" / "timestamps.txt").write_text(
+        "2011-09-26 13:02:35.123456\n2011-09-26 13:02:35.223456\n"
+    )
+    (seq_root / "image_03" / "timestamps.txt").write_text(
+        "2011-09-26 13:02:35.523456\n2011-09-26 13:02:36.223456\n"
+    )
+    (seq_root.parent / "calib_cam_to_cam.txt").write_text(
+        "P_rect_02: 7 0 3 0 0 7 2 0 0 0 1 0\nP_rect_03: 7 0 3 0 0 7 2 0 0 0 1 -0.1\n"
+    )
+
+    multi = MultiCameraKittiSequence(
+        tmp_path,
+        "2011_09_26_drive_0001_sync",
+        cameras=["image_02", "image_03"],
+        reference_camera="image_02",
+    )
+    synced, report = multi.synchronize(tolerance_s=0.05)
+
+    assert len(synced) == 1
+    assert report.metrics["dropped_frames"] == 1.0

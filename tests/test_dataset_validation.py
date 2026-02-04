@@ -5,7 +5,11 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from dataset_validation import validate_kitti, validate_tum
+from dataset_validation import (
+    validate_kitti,
+    validate_kitti_multi_camera,
+    validate_tum,
+)
 
 
 def _touch(path: Path) -> None:
@@ -39,3 +43,26 @@ def test_validate_tum_sequence(tmp_path: Path) -> None:
 
     assert result.ok
     assert result.metadata["num_frames"] == 1
+
+
+def test_validate_kitti_multi_camera_sequence(tmp_path: Path) -> None:
+    sequence_path = tmp_path / "sequences" / "00"
+    image_dir_2 = sequence_path / "image_2"
+    image_dir_3 = sequence_path / "image_3"
+    _touch(image_dir_2 / "000000.png")
+    _touch(image_dir_3 / "000000.png")
+    (sequence_path / "times.txt").write_text("0.0\n", encoding="utf-8")
+
+    calib = "P2: 1 0 0 0 0 1 0 0 0 0 1 0\nP3: 1 0 0 -0.1 0 1 0 0 0 0 1 0\n"
+    (sequence_path / "calib.txt").write_text(calib, encoding="utf-8")
+
+    result = validate_kitti_multi_camera(
+        tmp_path,
+        "00",
+        cameras=["image_2", "image_3"],
+        reference_camera="image_2",
+        sync_tolerance_s=0.01,
+    )
+
+    assert result.ok
+    assert result.metadata["sync_report"]["ok"]
