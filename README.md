@@ -18,7 +18,8 @@ pose-graph optimization.
 - **Loop closure detection** via Bag-of-Words (BoW) place recognition with
   geometric verification.
 - **Persistent map snapshots + relocalization** to save/load keyframes and
-  recover tracking after failures.
+  recover tracking after failures (including on-the-fly map snapshot building
+  from keyframes in the SLAM API).
 - **Pose-graph optimization** in SE(3), with optional **Sim(3)** loop correction
   to mitigate scale drift in monocular runs.
 - **Evaluation harness** for ATE/RPE on KITTI and TUM, plus dataset validation

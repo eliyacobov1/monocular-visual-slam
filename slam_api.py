@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import cv2
 import numpy as np
@@ -25,6 +25,9 @@ from robust_pose_estimator import (
     RobustPoseEstimatorConfig,
 )
 from run_telemetry import RunTelemetryRecorder, TelemetrySink, timed_event
+from keyframe_manager import KeyframeManager
+from map_builder import MapBuilderConfig, MapBuildStats, MapSnapshotBuilder
+from persistent_map import MapRelocalizer, PersistentMapSnapshot, PersistentMapStore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +47,17 @@ class SLAMSystemConfig:
     enable_telemetry: bool = True
     telemetry_name: str = "slam_telemetry"
     telemetry_sink: TelemetrySink | None = None
+    keyframe_window_size: int = 5
+    keyframe_min_translation: float = 0.1
+    keyframe_min_rotation_deg: float = 5.0
+    keyframe_min_match_ratio: float = 0.25
+    keyframe_min_matches: int = 60
+    map_builder: MapBuilderConfig = MapBuilderConfig()
+    relocalization_min_matches: int = 80
+    relocalization_min_inliers: int = 40
+    relocalization_score_threshold: float = 0.75
+    relocalization_ransac_threshold: float = 0.01
+    relocalization_max_candidates: int = 5
 
 
 @dataclass(frozen=True)
@@ -72,6 +86,8 @@ class SLAMRunResult:
     diagnostics_path: Path
     telemetry_path: Path | None
     frame_diagnostics: tuple[FrameDiagnostics, ...]
+    map_snapshot_path: Path | None
+    map_stats: MapBuildStats | None
 
 
 class SLAMSystem:
@@ -103,6 +119,19 @@ class SLAMSystem:
         self._prev_desc: np.ndarray | None = None
         self._current_pose = np.eye(4)
         self._frame_id = 0
+        self._keyframe_manager = KeyframeManager(
+            window_size=config.keyframe_window_size,
+            min_translation=config.keyframe_min_translation,
+            min_rotation_deg=config.keyframe_min_rotation_deg,
+            min_match_ratio=config.keyframe_min_match_ratio,
+            min_matches=config.keyframe_min_matches,
+        )
+        self._map_builder = MapSnapshotBuilder(config.map_builder)
+        self._last_map_snapshot: PersistentMapSnapshot | None = None
+        self._last_map_stats: MapBuildStats | None = None
+        self._map_dirty = False
+        self._relocalizer_snapshot: PersistentMapSnapshot | None = None
+        self._relocalizer: MapRelocalizer | None = None
 
     def process_frame(self, frame: np.ndarray, timestamp: float) -> np.ndarray:
         if frame.ndim not in (2, 3):
@@ -137,6 +166,8 @@ class SLAMSystem:
             matches = self.feature_pipeline.match(self._prev_desc, desc)
         if len(matches) < self.config.pose_config.min_matches:
             LOGGER.warning("Frame %d rejected: not enough matches", self._frame_id)
+            if self._attempt_relocalization(kp, desc, frame_gray, timestamp):
+                return self._current_pose.copy()
             self._prev_frame = frame_gray
             self._prev_kp = kp
             self._prev_desc = desc
@@ -164,6 +195,8 @@ class SLAMSystem:
                 )
         except Exception as exc:
             LOGGER.exception("Pose estimation failed for frame %d", self._frame_id)
+            if self._attempt_relocalization(kp, desc, frame_gray, timestamp):
+                return self._current_pose.copy()
             self._prev_frame = frame_gray
             self._prev_kp = kp
             self._prev_desc = desc
@@ -177,6 +210,7 @@ class SLAMSystem:
         self._prev_kp = kp
         self._prev_desc = desc
         self._append_pose_with_diagnostics(timestamp, pose_estimate.diagnostics)
+        self._maybe_add_keyframe(kp, desc)
         return self._current_pose.copy()
 
     def run_sequence(self, frames: Iterable[np.ndarray], timestamps: Iterable[float]) -> SLAMRunResult:
@@ -185,6 +219,13 @@ class SLAMSystem:
         return self.finalize_run()
 
     def finalize_run(self) -> SLAMRunResult:
+        map_snapshot_path = None
+        map_stats = None
+        map_snapshot = self._build_map_snapshot()
+        if map_snapshot is not None:
+            map_bundle = self.data_store.save_map_snapshot("slam_map", map_snapshot)
+            map_snapshot_path = map_bundle.path
+            map_stats = self._last_map_stats
         trajectory_bundle = self.trajectory.as_bundle()
         trajectory_path = self.data_store.save_trajectory(trajectory_bundle)
         metrics = summarize_trajectory(trajectory_bundle)
@@ -218,6 +259,23 @@ class SLAMSystem:
             diagnostics_path=diagnostics_path,
             telemetry_path=self.telemetry.path if isinstance(self.telemetry, RunTelemetryRecorder) else None,
             frame_diagnostics=tuple(self.frame_diagnostics),
+            map_snapshot_path=map_snapshot_path,
+            map_stats=map_stats,
+        )
+
+    def load_map_snapshot(self, map_dir: Path) -> None:
+        store = PersistentMapStore()
+        snapshot = store.load(map_dir)
+        self._relocalizer_snapshot = snapshot
+        self._relocalizer = MapRelocalizer(
+            snapshot,
+            self.config.intrinsics,
+            min_matches=self.config.relocalization_min_matches,
+            min_inliers=self.config.relocalization_min_inliers,
+            max_candidates=self.config.relocalization_max_candidates,
+            score_threshold=self.config.relocalization_score_threshold,
+            ransac_threshold=self.config.relocalization_ransac_threshold,
+            verify_geometry=True,
         )
 
     def _append_pose(
@@ -288,6 +346,105 @@ class SLAMSystem:
             return _NullTelemetrySink()
         telemetry_path = self.data_store.telemetry_path(self.config.telemetry_name)
         return RunTelemetryRecorder(telemetry_path)
+
+    def _maybe_add_keyframe(
+        self,
+        keypoints: list[cv2.KeyPoint],
+        descriptors: np.ndarray,
+    ) -> None:
+        if descriptors is None or len(descriptors) == 0:
+            return
+        if self._keyframe_manager.should_add_keyframe(self._current_pose, descriptors):
+            self._keyframe_manager.add_keyframe(
+                frame_id=self._frame_id,
+                pose=self._current_pose,
+                keypoints=keypoints,
+                descriptors=descriptors,
+            )
+            self._map_dirty = True
+
+    def _build_map_snapshot(self) -> PersistentMapSnapshot | None:
+        if not self._keyframe_manager.keyframes:
+            return None
+        with timed_event("map_snapshot_build", self.telemetry, {"keyframes": len(self._keyframe_manager.keyframes)}):
+            snapshot, stats = self._map_builder.build_snapshot(self._keyframe_manager.keyframes)
+        self._last_map_snapshot = snapshot
+        self._last_map_stats = stats
+        return snapshot
+
+    def _ensure_relocalizer(self) -> MapRelocalizer | None:
+        if self._relocalizer is not None and not self._map_dirty:
+            return self._relocalizer
+        if not self._keyframe_manager.keyframes:
+            return None
+        with timed_event(
+            "map_snapshot_refresh",
+            self.telemetry,
+            {"keyframes": len(self._keyframe_manager.keyframes)},
+        ):
+            snapshot, stats = self._map_builder.build_snapshot(self._keyframe_manager.keyframes)
+        self._relocalizer_snapshot = snapshot
+        self._last_map_snapshot = snapshot
+        self._last_map_stats = stats
+        self._relocalizer = MapRelocalizer(
+            snapshot,
+            self.config.intrinsics,
+            min_matches=self.config.relocalization_min_matches,
+            min_inliers=self.config.relocalization_min_inliers,
+            max_candidates=self.config.relocalization_max_candidates,
+            score_threshold=self.config.relocalization_score_threshold,
+            ransac_threshold=self.config.relocalization_ransac_threshold,
+            verify_geometry=True,
+        )
+        self._map_dirty = False
+        return self._relocalizer
+
+    def _attempt_relocalization(
+        self,
+        keypoints: list[cv2.KeyPoint],
+        descriptors: np.ndarray,
+        frame_gray: np.ndarray,
+        timestamp: float,
+    ) -> bool:
+        relocalizer = self._ensure_relocalizer()
+        if relocalizer is None:
+            return False
+        if descriptors is None or len(descriptors) == 0:
+            return False
+        with timed_event(
+            "relocalization_search",
+            self.telemetry,
+            {"frame_id": self._frame_id},
+        ):
+            result = relocalizer.relocalize(keypoints, descriptors)
+        if result is None:
+            LOGGER.info("Relocalization failed for frame %d", self._frame_id)
+            return False
+        kf = self._keyframe_manager.keyframes_by_id().get(result.frame_id)
+        if kf is None:
+            LOGGER.warning("Relocalization keyframe %d not found", result.frame_id)
+            return False
+        relative_pose = np.eye(4)
+        relative_pose[:3, :3] = result.rotation
+        relative_pose[:3, 3] = result.translation
+        self._current_pose = kf.pose @ relative_pose
+        self._prev_frame = frame_gray
+        self._prev_kp = keypoints
+        self._prev_desc = descriptors
+        self._append_pose(
+            timestamp,
+            method="relocalization",
+            match_count=result.inliers,
+            inliers=result.inliers,
+            status="relocalized",
+            failure_reason=None,
+        )
+        LOGGER.info(
+            "Relocalized frame %d against keyframe %d",
+            self._frame_id,
+            result.frame_id,
+        )
+        return True
 
 
 class _NullTelemetrySink:

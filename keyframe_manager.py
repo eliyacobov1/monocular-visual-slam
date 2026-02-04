@@ -105,6 +105,9 @@ class KeyframeManager:
             poses=optimized_poses,
         )
 
+    def keyframes_by_id(self) -> dict[int, Keyframe]:
+        return {kf.frame_id: kf for kf in self.keyframes}
+
     def _match_ratio(self, desc_a: np.ndarray, desc_b: np.ndarray) -> float:
         if desc_a is None or desc_b is None or len(desc_a) == 0 or len(desc_b) == 0:
             return 0.0
