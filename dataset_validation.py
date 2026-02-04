@@ -13,6 +13,7 @@ from typing import Any
 
 from camera_rig import CameraRig
 from kitti_dataset import (
+    MultiCameraKittiSequence,
     camera_id_from_name,
     parse_kitti_calib_file,
     resolve_camera_matrix,
@@ -184,6 +185,111 @@ def validate_kitti(root: Path, sequence: str, camera: str = "image_2") -> Valida
     return result
 
 
+def validate_kitti_multi_camera(
+    root: Path,
+    sequence: str,
+    cameras: list[str],
+    reference_camera: str | None = None,
+    sync_tolerance_s: float = 0.002,
+) -> ValidationResult:
+    result = ValidationResult(dataset="kitti", root=root)
+    if not root.exists():
+        result.add_issue(
+            "error",
+            f"KITTI root does not exist: {root}",
+            hint="Ensure the root points at the dataset base directory.",
+        )
+        return result
+
+    sequence_path = _resolve_kitti_sequence(root, sequence)
+    if sequence_path is None:
+        result.add_issue(
+            "error",
+            f"Sequence '{sequence}' not found under {root}",
+            hint="Check that the sequence folder exists or use the correct root.",
+        )
+        return result
+    result.metadata["sequence_path"] = str(sequence_path)
+    result.metadata["cameras"] = cameras
+    result.metadata["reference_camera"] = reference_camera or cameras[0]
+    result.metadata["sync_tolerance_s"] = sync_tolerance_s
+
+    for camera in cameras:
+        image_dir = _resolve_kitti_image_dir(sequence_path, camera)
+        if image_dir is None:
+            result.add_issue(
+                "error",
+                f"No image directory found for camera {camera} in {sequence_path}",
+                hint="Verify the camera name (image_0/image_1/image_2/image_3).",
+            )
+            continue
+        image_files = sorted(image_dir.glob("*.png"))
+        result.metadata[f"{camera}_image_dir"] = str(image_dir)
+        result.metadata[f"{camera}_num_frames"] = len(image_files)
+        if not image_files:
+            result.add_issue(
+                "error",
+                f"No image frames found under {image_dir}",
+                hint="Confirm the dataset contains PNG images.",
+            )
+
+    calib_paths = [
+        sequence_path / "calib.txt",
+        sequence_path / "calib_cam_to_cam.txt",
+    ]
+    if sequence_path.parent != root:
+        calib_paths.append(sequence_path.parent / "calib_cam_to_cam.txt")
+    calib_path = next((path for path in calib_paths if path.exists()), None)
+    if calib_path is None:
+        result.add_issue(
+            "warning",
+            "Calibration file not found for sequence.",
+            hint="Expected calib.txt or calib_cam_to_cam.txt.",
+        )
+    else:
+        result.metadata["calib_path"] = str(calib_path)
+        try:
+            calib = parse_kitti_calib_file(calib_path)
+            for camera in cameras:
+                camera_id = camera_id_from_name(camera)
+                resolve_camera_matrix(calib, camera_id)
+            rig = CameraRig.from_kitti_calibration(
+                calib,
+                camera_names=cameras,
+                reference_camera=reference_camera or cameras[0],
+            )
+            report = rig.validate()
+            result.metadata["calibration_report"] = report.to_dict()
+            for issue in report.issues:
+                result.add_issue(issue.level, issue.message, issue.hint)
+        except Exception as exc:  # pragma: no cover - defensive for parsing errors
+            result.add_issue(
+                "warning",
+                f"Failed to parse calibration for cameras {cameras}: {exc}",
+                hint="Ensure calibration contains the expected projection matrices.",
+            )
+
+    if result.ok:
+        try:
+            multi_sequence = MultiCameraKittiSequence(
+                root,
+                sequence,
+                cameras=cameras,
+                reference_camera=reference_camera,
+            )
+            _, sync_report = multi_sequence.synchronize(tolerance_s=sync_tolerance_s)
+            result.metadata["sync_report"] = sync_report.to_dict()
+            for issue in sync_report.issues:
+                result.add_issue(issue.level, issue.message, issue.hint)
+        except Exception as exc:  # pragma: no cover
+            result.add_issue(
+                "error",
+                f"Multi-camera sync failed: {exc}",
+                hint="Verify timestamps and image counts for each camera.",
+            )
+    return result
+
+
 def validate_tum(root: Path) -> ValidationResult:
     result = ValidationResult(dataset="tum", root=root)
     if not root.exists():
@@ -248,6 +354,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--root", required=True, help="Dataset root directory")
     parser.add_argument("--sequence", help="Sequence name for KITTI validation")
     parser.add_argument("--camera", default="image_2", help="Camera name for KITTI")
+    parser.add_argument(
+        "--cameras",
+        help="Comma-separated list of cameras for multi-camera validation.",
+    )
+    parser.add_argument(
+        "--sync_tolerance_s",
+        type=float,
+        default=0.002,
+        help="Max timestamp delta for multi-camera synchronization.",
+    )
     parser.add_argument("--json", action="store_true", help="Output JSON summary")
     parser.add_argument(
         "--strict",
@@ -274,7 +390,19 @@ def main() -> None:
     if args.dataset == "kitti":
         if not args.sequence:
             raise SystemExit("--sequence is required for KITTI validation")
-        result = validate_kitti(root, args.sequence, camera=args.camera)
+        if args.cameras:
+            cameras = [camera.strip() for camera in args.cameras.split(",") if camera.strip()]
+            if not cameras:
+                raise SystemExit("--cameras must contain at least one camera name")
+            result = validate_kitti_multi_camera(
+                root,
+                args.sequence,
+                cameras=cameras,
+                reference_camera=args.camera,
+                sync_tolerance_s=args.sync_tolerance_s,
+            )
+        else:
+            result = validate_kitti(root, args.sequence, camera=args.camera)
     else:
         result = validate_tum(root)
 

@@ -112,6 +112,17 @@ Validate the dataset layout:
 python dataset_validation.py --dataset kitti --root /data/kitti --sequence 00
 ```
 
+Validate multi-camera synchronization (stereo pairs or multi-view rigs):
+
+```bash
+python dataset_validation.py \
+  --dataset kitti \
+  --root /data/kitti \
+  --sequence 00 \
+  --cameras image_2,image_3 \
+  --sync_tolerance_s 0.003
+```
+
 Run the evaluation harness (ATE/RPE):
 
 ```bash

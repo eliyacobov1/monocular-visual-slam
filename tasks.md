@@ -54,8 +54,8 @@
 ## Project Status (Interview Readiness)
 **Status**: Partial. CI-ready benchmark automation, persistent map +
 relocalization wiring, and multi-camera rig calibration validation are now
-available, but multi-camera ingestion/synchronization and end-to-end
-relocalization demos remain the primary gaps.
+available. Multi-camera ingestion/synchronization is validated, but
+end-to-end relocalization demos remain the primary gap.
 
 ## Minimal Gaps Checklist
 - ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
@@ -65,13 +65,13 @@ relocalization demos remain the primary gaps.
 - ✅ CI-ready benchmark harness wiring for performance regression detection.
 - ✅ Persistent map + relocalization pipeline wiring (snapshot build + recovery hooks).
 - ✅ Multi-camera rig abstraction + calibration validation for stereo/multi-view datasets.
-- ⏳ Multi-camera ingestion + synchronization pipeline for stereo/multi-view datasets.
+- ✅ Multi-camera ingestion + synchronization pipeline for stereo/multi-view datasets.
 - ⏳ End-to-end relocalization demo sequence with tracking-loss recovery.
 
 ## Follow-up Tasks (Post-Implementation)
-- Wire the multi-camera rig abstraction into dataset ingestion with explicit
-  sync/latency validation for stereo pairs.
 - Add calibration regression gates (baseline drift, intrinsics drift) into the
   benchmark runner for KITTI stereo sequences.
+- Integrate multi-camera synchronization into the SLAM API for stereo/multi-view
+  experiments with explicit latency diagnostics.
 - Add an end-to-end relocalization demo script that loads a saved map snapshot,
   forces a tracking loss, and verifies recovery on KITTI sequences.
