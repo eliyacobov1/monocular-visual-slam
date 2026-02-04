@@ -24,6 +24,8 @@ pose-graph optimization.
   to mitigate scale drift in monocular runs.
 - **Evaluation harness** for ATE/RPE on KITTI and TUM, plus dataset validation
   helpers.
+- **Multi-camera calibration rig** parsing with baseline validation and
+  diagnostics for KITTI stereo setups.
 - **Visualization** through Matplotlib live plots and an optional Next.js
   dashboard.
 

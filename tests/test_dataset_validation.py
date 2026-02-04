@@ -27,6 +27,7 @@ def test_validate_kitti_sequence(tmp_path: Path) -> None:
     assert result.ok
     assert result.metadata["num_frames"] == 1
     assert result.metadata["num_timestamps"] == 1
+    assert result.metadata["calibration_report"]["ok"]
 
 
 def test_validate_tum_sequence(tmp_path: Path) -> None:

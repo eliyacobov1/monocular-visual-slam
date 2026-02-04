@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from camera_rig import CameraRig
 from kitti_dataset import (
     camera_id_from_name,
     parse_kitti_calib_file,
@@ -169,6 +170,11 @@ def validate_kitti(root: Path, sequence: str, camera: str = "image_2") -> Valida
         calib = parse_kitti_calib_file(calib_path)
         camera_id = camera_id_from_name(camera)
         resolve_camera_matrix(calib, camera_id)
+        rig = CameraRig.from_kitti_calibration(calib)
+        report = rig.validate()
+        result.metadata["calibration_report"] = report.to_dict()
+        for issue in report.issues:
+            result.add_issue(issue.level, issue.message, issue.hint)
     except Exception as exc:  # pragma: no cover - defensive for parsing errors
         result.add_issue(
             "warning",

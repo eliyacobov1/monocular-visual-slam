@@ -41,6 +41,11 @@ def test_kitti_odometry_sequence_iteration(tmp_path: Path) -> None:
     np.testing.assert_allclose(intrinsics[0, 2], 3.0)
     np.testing.assert_allclose(intrinsics[1, 2], 2.0)
 
+    rig = sequence.camera_rig()
+    assert rig is not None
+    assert rig.reference_camera == "image_2"
+    assert "image_2" in rig.cameras
+
 
 def test_parse_kitti_calibration_file(tmp_path: Path) -> None:
     calib_path = tmp_path / "calib.txt"
