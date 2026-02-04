@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("cv2")
+pytest.importorskip("sklearn")
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -44,3 +45,5 @@ def test_slam_api_runs_with_blank_frames(tmp_path: Path) -> None:
     assert result.telemetry_path is not None
     assert result.telemetry_path.exists()
     assert len(result.frame_diagnostics) == 2
+    assert result.map_snapshot_path is None
+    assert result.map_stats is None
