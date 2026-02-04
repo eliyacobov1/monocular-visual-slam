@@ -1,0 +1,19 @@
+{
+  "feature_config": {
+    "name": "orb",
+    "nfeatures": 2000,
+    "ratio_test": 0.8,
+    "cross_check": true,
+    "max_matches": 500
+  },
+  "pose_config": {
+    "min_matches": 40,
+    "base_ransac_threshold": 0.01,
+    "min_ransac_threshold": 0.005,
+    "max_ransac_threshold": 0.02,
+    "min_inlier_ratio": 0.25,
+    "homography_bias": 0.9,
+    "essential_bias": 1.0,
+    "min_parallax": 1.0
+  }
+}

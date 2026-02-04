@@ -47,3 +47,23 @@ def test_slam_api_runs_with_blank_frames(tmp_path: Path) -> None:
     assert len(result.frame_diagnostics) == 2
     assert result.map_snapshot_path is None
     assert result.map_stats is None
+
+
+def test_tracking_loss_injection_requires_frame(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"run_id": "api_test"}), encoding="utf-8")
+
+    config = SLAMSystemConfig(
+        run_id="api_test",
+        output_dir=tmp_path,
+        config_path=config_path,
+        config_hash="hash",
+        intrinsics=np.eye(3),
+        feature_config=FeaturePipelineConfig(nfeatures=200),
+        pose_config=RobustPoseEstimatorConfig(min_matches=50),
+        use_run_subdir=False,
+    )
+
+    slam = SLAMSystem(config)
+    with pytest.raises(RuntimeError):
+        slam.inject_tracking_loss("test")

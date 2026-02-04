@@ -236,6 +236,26 @@ mean/p95/max durations) from the telemetry summary and compares them against
 their own baseline entry. If you omit `baseline.telemetry.key`, it defaults to
 `<baseline.key>_telemetry`.
 
+### Relocalization Demo (Tracking Loss Recovery)
+
+Run the end-to-end relocalization demo, which injects a tracking loss at a
+specified frame and records recovery telemetry to a JSON report in the run
+directory:
+
+```bash
+python relocalization_demo.py \
+  --root /data/kitti \
+  --sequence 00 \
+  --camera image_2 \
+  --config configs/pipeline/kitti_default.json \
+  --loss_frame 120 \
+  --use_run_subdir
+```
+
+The demo writes `relocalization_demo_report.json` alongside other run artifacts
+and summarizes relocalization attempt counts, success rates, and latency
+statistics from the telemetry stream.
+
 You can also use `kitti_dataset.py` directly to iterate frames and parse
 calibration.
 
