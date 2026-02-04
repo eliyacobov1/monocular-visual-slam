@@ -93,21 +93,23 @@ See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
   add a streaming summarizer for very long runs.
 
 ## Project Status (Interview Readiness)
-**Status**: Partial. Diagnostics-aware baseline regression thresholds and
-telemetry regression gating are in place, but CI-ready benchmark automation
-and telemetry-focused CI integration remain unfinished.
+**Status**: Partial. CI-ready benchmark automation with severity scoring is now
+in place, but multi-sensor extensibility and persistent relocalization
+demonstrations are still incomplete.
 
 ## Minimal Gaps Checklist
 - ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
 - ✅ Streaming diagnostics + telemetry summarizers for long KITTI runs.
 - ✅ Regression gate thresholds for diagnostics metrics alongside ATE/RPE.
 - ✅ Telemetry latency regression thresholds alongside ATE/RPE baselines.
-- ⏳ CI-ready benchmark harness wiring for performance regression detection.
+- ✅ CI-ready benchmark harness wiring for performance regression detection.
+- ⏳ Persistent map + relocalization scenario coverage (save/load + recovery demo).
+- ⏳ Multi-camera rig abstraction + calibration validation for stereo/multi-view datasets.
 
 ## Follow-up Tasks (Post-Implementation)
-- Add schema validation + templating for regression gate configs, including
-  diagnostics and telemetry threshold presets for KITTI/TUM.
-- Build a CLI to compare telemetry + diagnostics regression outcomes across
-  runs and visualize directional threshold deltas.
-- Add telemetry regression exports (CSV/JSON) that correlate latency drift
-  with ATE/RPE changes for CI dashboards.
+- Add schema validation + templating for regression configs, including preset
+  threshold profiles for KITTI/TUM smoke suites.
+- Build a CI dashboard export that trends severity scores alongside ATE/RPE and
+  telemetry drift across runs.
+- Add a regression gate comparator CLI that can diff benchmark summaries and
+  highlight metric-level severity deltas.

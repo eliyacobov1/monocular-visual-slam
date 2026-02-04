@@ -4,6 +4,20 @@
   "seed": 7,
   "output_dir": "reports/kitti_odometry",
   "use_run_subdir": true,
+  "baseline": {
+    "store_path": "reports/baselines.json",
+    "key": "kitti_odometry_smoke",
+    "thresholds": {
+      "ATE_RMSE": { "direction": "lower", "tolerance": 0.05 },
+      "RPE_RMSE": { "direction": "lower", "tolerance": 0.05 }
+    },
+    "telemetry": {
+      "thresholds": {
+        "telemetry_mean_duration_s": { "direction": "lower", "tolerance": 0.02 }
+      }
+    },
+    "write": false
+  },
   "kitti_root": "/data/kitti",
   "gt_root": "/data/kitti/poses",
   "est_root": "outputs/poses",
