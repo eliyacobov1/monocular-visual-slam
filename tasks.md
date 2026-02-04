@@ -52,11 +52,10 @@
   into memory; migrate to a streaming summarizer for very long runs.
 
 ## Project Status (Interview Readiness)
-**Status**: Partial (improving). The relocalization demo now validates
-tracking-loss recovery with telemetry-backed latency metrics, complementing
-the CI-ready benchmark automation and persistent map tooling. The remaining
-gaps focus on regression gating for the new relocalization metrics and
-calibration drift checks.
+**Status**: Partial (improving). Relocalization recovery metrics (success rate +
+latency) are now regression-gated alongside ATE/RPE and telemetry baselines,
+leaving calibration drift validation and long-run ingestion isolation as the
+primary readiness gaps.
 
 ## Minimal Gaps Checklist
 - ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
@@ -68,14 +67,15 @@ calibration drift checks.
 - ✅ Multi-camera rig abstraction + calibration validation for stereo/multi-view datasets.
 - ✅ Multi-camera ingestion + synchronization pipeline for stereo/multi-view datasets.
 - ✅ End-to-end relocalization demo sequence with tracking-loss recovery.
-- ⏳ Regression gating for relocalization recovery metrics (success rate + latency).
 - ⏳ Calibration drift regression checks (baseline/intrinsics) wired into CI gate configs.
 - ⏳ Asynchronous ingestion + failure isolation for long-running multi-sequence runs.
 
 ## Follow-up Tasks (Post-Implementation)
-- Add regression thresholds for relocalization success rate and latency to the
-  benchmark regression gate (fail fast on recovery degradations).
 - Extend the relocalization demo to optionally load a persisted map snapshot
   and compare recovery performance across runs.
 - Add calibration drift regression gates (baseline + intrinsics deltas) into
   KITTI CI benchmark configs.
+- Add a relocalization benchmark pack that aggregates success/latency across
+  multiple tracking-loss injections per sequence for higher statistical power.
+- Introduce confidence-interval reporting for relocalization latency deltas to
+  reduce sensitivity to single-run variance.

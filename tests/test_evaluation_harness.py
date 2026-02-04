@@ -298,3 +298,67 @@ def test_evaluation_harness_with_diagnostics_summary(tmp_path: Path) -> None:
     per_sequence = summary["per_sequence"]["slam_run"]
     assert "diagnostics_summary" in per_sequence
     assert per_sequence["metrics"]["diag_frame_count"] == 2.0
+
+
+def test_evaluation_harness_with_relocalization_report(tmp_path: Path) -> None:
+    gt_path = tmp_path / "gt.txt"
+    _write_traj(gt_path, [(0.0, 0.0), (1.0, 0.0)])
+
+    run_dir = tmp_path / "slam_run"
+    trajectory_path = trajectory_artifact_path(run_dir, "slam_run")
+    trajectory_path.parent.mkdir(parents=True, exist_ok=True)
+    poses = np.repeat(np.eye(4)[None, ...], 2, axis=0)
+    poses[1, 0, 3] = 1.0
+    np.savez_compressed(
+        trajectory_path,
+        poses=poses,
+        timestamps=np.array([0.0, 1.0]),
+        frame_ids=np.array([0, 1]),
+    )
+
+    report_payload = {
+        "run_id": "demo",
+        "sequence": "00",
+        "relocalization_summary": {
+            "attempts": 2,
+            "successes": 1,
+            "success_rate": 0.5,
+            "latency_mean_s": 0.2,
+            "latency_p50_s": 0.2,
+            "latency_p95_s": 0.3,
+        },
+    }
+    report_path = run_dir / "relocalization_demo_report.json"
+    report_path.write_text(json.dumps(report_payload), encoding="utf-8")
+
+    config = {
+        "run": {
+            "run_id": "unit_relocalization",
+            "dataset": "custom",
+            "seed": 0,
+            "output_dir": str(tmp_path / "reports"),
+        },
+        "evaluation": {
+            "trajectories": [
+                {
+                    "name": "slam_run",
+                    "gt_path": str(gt_path),
+                    "est_run_dir": str(run_dir),
+                    "format": "xy",
+                    "cols": "0,1",
+                    "rpe_delta": 1,
+                }
+            ]
+        },
+        "baseline": {"relocalization": {"report_name": "relocalization_demo_report.json"}},
+    }
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    eval_config = load_config(config_path)
+    summary = run_evaluation(eval_config)
+
+    assert summary["relocalization_metrics"]["relocalization_success_rate"] == 0.5
+    per_sequence = summary["per_sequence"]["slam_run"]
+    assert per_sequence["relocalization_metrics"]["relocalization_attempts"] == 2.0

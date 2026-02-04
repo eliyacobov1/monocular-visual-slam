@@ -76,6 +76,10 @@ class EvaluationConfig:
     telemetry_baseline_key: str | None
     telemetry_baseline_thresholds: dict[str, float | dict[str, Any]] | None
     write_telemetry_baseline: bool
+    relocalization_baseline_key: str | None
+    relocalization_baseline_thresholds: dict[str, float | dict[str, Any]] | None
+    write_relocalization_baseline: bool
+    relocalization_report_name: str
 
 
 def _timestamp() -> str:
@@ -270,6 +274,21 @@ def load_config(config_path: Path) -> EvaluationConfig:
     )
     if telemetry_baseline_thresholds and telemetry_baseline_key is None and baseline_key:
         telemetry_baseline_key = f"{baseline_key}_telemetry"
+    relocalization_config = baseline_config.get("relocalization", {}) if baseline_config else {}
+    relocalization_baseline_key = (
+        relocalization_config.get("key") if relocalization_config else None
+    )
+    relocalization_baseline_thresholds = (
+        relocalization_config.get("thresholds") if relocalization_config else None
+    )
+    write_relocalization_baseline = (
+        bool(relocalization_config.get("write", False)) if relocalization_config else False
+    )
+    if relocalization_baseline_thresholds and relocalization_baseline_key is None and baseline_key:
+        relocalization_baseline_key = f"{baseline_key}_relocalization"
+    relocalization_report_name = str(
+        relocalization_config.get("report_name", "relocalization_demo_report.json")
+    )
 
     return EvaluationConfig(
         run_id=run_id,
@@ -290,6 +309,12 @@ def load_config(config_path: Path) -> EvaluationConfig:
         telemetry_baseline_key=str(telemetry_baseline_key) if telemetry_baseline_key else None,
         telemetry_baseline_thresholds=telemetry_baseline_thresholds,
         write_telemetry_baseline=write_telemetry_baseline,
+        relocalization_baseline_key=str(relocalization_baseline_key)
+        if relocalization_baseline_key
+        else None,
+        relocalization_baseline_thresholds=relocalization_baseline_thresholds,
+        write_relocalization_baseline=write_relocalization_baseline,
+        relocalization_report_name=relocalization_report_name,
     )
 
 
@@ -360,6 +385,27 @@ def _load_telemetry_events(path: Path) -> list[dict[str, Any]]:
     if not isinstance(events, list):
         raise ValueError(f"Telemetry payload at {path} is missing 'events' list")
     return events
+
+
+def _load_relocalization_report(path: Path) -> dict[str, Any]:
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Relocalization report at {path} is invalid")
+    return payload
+
+
+def _relocalization_metrics_from_report(report: dict[str, Any]) -> dict[str, float]:
+    summary = report.get("relocalization_summary")
+    if not isinstance(summary, dict):
+        raise ValueError("Relocalization report missing 'relocalization_summary'")
+    return {
+        "relocalization_attempts": float(summary.get("attempts", 0.0)),
+        "relocalization_successes": float(summary.get("successes", 0.0)),
+        "relocalization_success_rate": float(summary.get("success_rate", 0.0)),
+        "relocalization_latency_mean_s": float(summary.get("latency_mean_s", 0.0)),
+        "relocalization_latency_p50_s": float(summary.get("latency_p50_s", 0.0)),
+        "relocalization_latency_p95_s": float(summary.get("latency_p95_s", 0.0)),
+    }
 
 
 class _TelemetryStageStats:
@@ -529,6 +575,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
     per_sequence_metrics: dict[str, dict[str, float]] = {}
     per_sequence_reports: dict[str, dict[str, Any]] = {}
     per_sequence_telemetry: dict[str, dict[str, Any]] = {}
+    per_sequence_relocalization_metrics: dict[str, dict[str, float]] = {}
     telemetry_accumulator = _TelemetryAccumulator()
 
     LOGGER.info("Starting evaluation run %s", config.run_id)
@@ -577,6 +624,30 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
                     entry.name,
                     diagnostics_path,
                 )
+            relocalization_path = entry.est_run_dir / config.relocalization_report_name
+            if relocalization_path.exists():
+                try:
+                    relocalization_report = _load_relocalization_report(relocalization_path)
+                    relocalization_metrics = _relocalization_metrics_from_report(
+                        relocalization_report
+                    )
+                    payload["relocalization_summary"] = relocalization_report.get(
+                        "relocalization_summary", {}
+                    )
+                    payload["relocalization_metrics"] = relocalization_metrics
+                    per_sequence_relocalization_metrics[entry.name] = relocalization_metrics
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    LOGGER.warning(
+                        "Failed to load relocalization report for %s (%s)",
+                        entry.name,
+                        exc,
+                    )
+            else:
+                LOGGER.info(
+                    "Relocalization report not found for %s at %s",
+                    entry.name,
+                    relocalization_path,
+                )
         if entry.name in per_sequence_telemetry:
             payload["telemetry"] = per_sequence_telemetry[entry.name]
         per_sequence_reports[entry.name] = payload
@@ -589,6 +660,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         write_csv_report(report_base.with_suffix(".csv"), payload)
 
     aggregate = _aggregate_metrics(per_sequence_metrics)
+    relocalization_metrics = _aggregate_metrics(per_sequence_relocalization_metrics)
     telemetry_summary = telemetry_accumulator.summarize() if telemetry_accumulator.total_events else {}
     telemetry_metrics = _telemetry_metrics_from_summary(telemetry_summary)
     summary = {
@@ -602,15 +674,19 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         "run_metadata": str(artifacts.metadata_path),
         "baseline_key": config.baseline_key,
         "telemetry_baseline_key": config.telemetry_baseline_key,
+        "relocalization_baseline_key": config.relocalization_baseline_key,
         "aggregate_metrics": aggregate,
+        "relocalization_metrics": relocalization_metrics,
         "telemetry_summary": telemetry_summary,
         "telemetry_metrics": telemetry_metrics,
         "telemetry_per_sequence": per_sequence_telemetry,
+        "relocalization_per_sequence": per_sequence_relocalization_metrics,
         "per_sequence": per_sequence_reports,
     }
 
     baseline_comparison = None
     telemetry_baseline_comparison = None
+    relocalization_baseline_comparison = None
     store = None
     baselines: dict[str, Any] = {}
     if config.baseline_store:
@@ -692,6 +768,55 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         LOGGER.info(
             "Telemetry baseline '%s' updated at %s",
             config.telemetry_baseline_key,
+            config.baseline_store,
+        )
+
+    if config.baseline_store and config.relocalization_baseline_key:
+        baseline = baselines.get(config.relocalization_baseline_key) if baselines else None
+        if baseline:
+            comparison = compare_metrics(
+                config.relocalization_baseline_key,
+                relocalization_metrics,
+                baseline,
+                config.relocalization_baseline_thresholds,
+            )
+            relocalization_baseline_comparison = {
+                "key": comparison.key,
+                "status": comparison.status,
+                "per_metric": comparison.per_metric,
+                "stats": comparison.stats,
+            }
+            summary["relocalization_baseline_comparison"] = relocalization_baseline_comparison
+            write_json_report(
+                output_dir / "relocalization_baseline_comparison.json",
+                relocalization_baseline_comparison,
+            )
+            LOGGER.info(
+                "Relocalization baseline comparison for %s: %s",
+                config.relocalization_baseline_key,
+                comparison.status,
+            )
+        else:
+            LOGGER.warning(
+                "Relocalization baseline key '%s' not found in %s",
+                config.relocalization_baseline_key,
+                config.baseline_store,
+            )
+    if (
+        config.baseline_store
+        and config.relocalization_baseline_key
+        and config.write_relocalization_baseline
+    ):
+        upsert_baseline(
+            config.baseline_store,
+            config.relocalization_baseline_key,
+            relocalization_metrics,
+            config.config_hash,
+            metadata={"dataset": config.dataset, "run_id": config.run_id, "relocalization": True},
+        )
+        LOGGER.info(
+            "Relocalization baseline '%s' updated at %s",
+            config.relocalization_baseline_key,
             config.baseline_store,
         )
 
