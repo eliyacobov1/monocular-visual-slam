@@ -19,6 +19,7 @@ from data_persistence import (
     load_frame_diagnostics_json,
     load_trajectory_npz,
     summarize_frame_diagnostics,
+    summarize_frame_diagnostics_streaming,
     trajectory_artifact_path,
     trajectory_positions,
 )
@@ -162,8 +163,12 @@ def test_frame_diagnostics_roundtrip_and_summary(tmp_path: Path) -> None:
 
     bundle = load_frame_diagnostics_json(diagnostics_path)
     summary = summarize_frame_diagnostics(bundle)
+    streaming_summary = summarize_frame_diagnostics_streaming(diagnostics_path)
 
     assert bundle.name == "frame_diagnostics"
     assert summary["diag_frame_count"] == 2.0
     assert summary["diag_method_essential_count"] == 1.0
     assert summary["diag_method_homography_ratio"] == 0.5
+    assert streaming_summary["diag_frame_count"] == 2.0
+    assert streaming_summary["diag_method_essential_count"] == 1.0
+    assert streaming_summary["diag_method_homography_ratio"] == 0.5

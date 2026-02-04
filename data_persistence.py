@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence, TYPE_CHECKING
+from typing import Any, Iterable, Iterator, Mapping, Sequence, TYPE_CHECKING
 from collections import Counter
 
 import numpy as np
@@ -74,6 +74,94 @@ class FrameDiagnosticsBundle:
     name: str
     entries: tuple[FrameDiagnosticsEntry, ...]
     recorded_at: str
+
+
+class P2Quantile:
+    """Streaming quantile estimator using the P² algorithm."""
+
+    def __init__(self, quantile: float) -> None:
+        if not 0.0 < quantile < 1.0:
+            raise ValueError("Quantile must be between 0 and 1")
+        self.quantile = float(quantile)
+        self._count = 0
+        self._initial: list[float] = []
+        self._positions = [0, 0, 0, 0, 0]
+        self._desired = [0.0, 0.0, 0.0, 0.0, 0.0]
+        self._increments = [0.0, 0.0, 0.0, 0.0, 0.0]
+        self._heights = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    def update(self, value: float) -> None:
+        value = float(value)
+        self._count += 1
+        if self._count <= 5:
+            self._initial.append(value)
+            if self._count == 5:
+                self._initial.sort()
+                self._heights = list(self._initial)
+                self._positions = [1, 2, 3, 4, 5]
+                q = self.quantile
+                self._desired = [1.0, 1.0 + 2.0 * q, 1.0 + 4.0 * q, 3.0 + 2.0 * q, 5.0]
+                self._increments = [0.0, q / 2.0, q, (1.0 + q) / 2.0, 1.0]
+            return
+
+        if value < self._heights[0]:
+            self._heights[0] = value
+            k = 0
+        elif value >= self._heights[4]:
+            self._heights[4] = value
+            k = 3
+        else:
+            k = 0
+            for idx in range(4):
+                if self._heights[idx] <= value < self._heights[idx + 1]:
+                    k = idx
+                    break
+
+        for idx in range(k + 1, 5):
+            self._positions[idx] += 1
+        for idx in range(5):
+            self._desired[idx] += self._increments[idx]
+
+        for idx in range(1, 4):
+            delta = self._desired[idx] - self._positions[idx]
+            if (delta >= 1 and self._positions[idx + 1] - self._positions[idx] > 1) or (
+                delta <= -1 and self._positions[idx - 1] - self._positions[idx] < -1
+            ):
+                step = int(np.sign(delta))
+                updated = self._parabolic_update(idx, step)
+                if self._heights[idx - 1] < updated < self._heights[idx + 1]:
+                    self._heights[idx] = updated
+                else:
+                    self._heights[idx] = self._linear_update(idx, step)
+                self._positions[idx] += step
+
+    def value(self) -> float:
+        if self._count == 0:
+            raise ValueError("No samples available for quantile estimation")
+        if self._count < 5:
+            return float(np.quantile(self._initial, self.quantile))
+        return float(self._heights[2])
+
+    def _parabolic_update(self, idx: int, step: int) -> float:
+        n_i = self._positions[idx]
+        n_im1 = self._positions[idx - 1]
+        n_ip1 = self._positions[idx + 1]
+        q_i = self._heights[idx]
+        q_im1 = self._heights[idx - 1]
+        q_ip1 = self._heights[idx + 1]
+        numerator = step * (n_i - n_im1 + step) * (q_ip1 - q_i) / (n_ip1 - n_i)
+        numerator += step * (n_ip1 - n_i - step) * (q_i - q_im1) / (n_i - n_im1)
+        return q_i + numerator / (n_ip1 - n_im1)
+
+    def _linear_update(self, idx: int, step: int) -> float:
+        return self._heights[idx] + step * (
+            (self._heights[idx + step] - self._heights[idx])
+            / (self._positions[idx + step] - self._positions[idx])
+        )
 
 
 @dataclass(frozen=True)
@@ -502,6 +590,125 @@ def load_frame_diagnostics_json(
         entries=entries,
         recorded_at=str(payload.get("recorded_at", _timestamp())),
     )
+
+
+def iter_json_array_items(path: Path, key: str) -> Iterator[dict[str, Any]]:
+    """Stream items from a JSON array payload without loading it fully."""
+
+    if not path.exists():
+        raise FileNotFoundError(f"JSON file not found: {path}")
+    decoder = json.JSONDecoder()
+    key_token = f"\"{key}\""
+    buffer = ""
+    in_array = False
+
+    with path.open("r", encoding="utf-8") as handle:
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            buffer += chunk
+            while True:
+                if not in_array:
+                    key_index = buffer.find(key_token)
+                    if key_index == -1:
+                        if len(buffer) > len(key_token):
+                            buffer = buffer[-len(key_token):]
+                        break
+                    bracket_index = buffer.find("[", key_index + len(key_token))
+                    if bracket_index == -1:
+                        buffer = buffer[key_index:]
+                        break
+                    buffer = buffer[bracket_index + 1 :]
+                    in_array = True
+                buffer = buffer.lstrip()
+                if buffer.startswith("]"):
+                    return
+                if buffer.startswith(","):
+                    buffer = buffer[1:]
+                    continue
+                try:
+                    item, index = decoder.raw_decode(buffer)
+                except json.JSONDecodeError:
+                    break
+                if isinstance(item, dict):
+                    yield item
+                else:
+                    raise ValueError(f"Expected object items for '{key}' in {path}")
+                buffer = buffer[index:]
+
+        if not in_array:
+            raise ValueError(f"Array key '{key}' not found in {path}")
+        buffer = buffer.lstrip()
+        while buffer:
+            if buffer.startswith("]"):
+                return
+            if buffer.startswith(","):
+                buffer = buffer[1:].lstrip()
+                continue
+            item, index = decoder.raw_decode(buffer)
+            if not isinstance(item, dict):
+                raise ValueError(f"Expected object items for '{key}' in {path}")
+            yield item
+            buffer = buffer[index:].lstrip()
+        raise ValueError(f"JSON array '{key}' not terminated in {path}")
+
+
+def summarize_frame_diagnostics_streaming(path: Path) -> dict[str, float]:
+    """Stream frame diagnostics summaries to avoid loading all entries."""
+
+    total = 0
+    match_sum = 0.0
+    inlier_sum = 0.0
+    ratio_sum = 0.0
+    score_sum = 0.0
+    parallax_median = P2Quantile(0.5)
+    method_counts: Counter[str] = Counter()
+    status_counts: Counter[str] = Counter()
+    failure_counts: Counter[str] = Counter()
+
+    for entry in iter_json_array_items(path, "entries"):
+        total += 1
+        match_sum += float(entry.get("match_count", 0.0))
+        inlier_sum += float(entry.get("inliers", 0.0))
+        ratio_sum += float(entry.get("inlier_ratio", 0.0))
+        score_sum += float(entry.get("score", 0.0))
+        parallax_median.update(float(entry.get("median_parallax", 0.0)))
+        method = str(entry.get("method") or "unknown")
+        status = str(entry.get("status") or "unknown")
+        method_counts[method] += 1
+        status_counts[status] += 1
+        failure_reason = entry.get("failure_reason")
+        if failure_reason:
+            failure_counts[str(failure_reason)] += 1
+
+    if total == 0:
+        raise ValueError("Frame diagnostics payload is empty")
+
+    total_float = float(total)
+    metrics: dict[str, float] = {
+        "diag_frame_count": total_float,
+        "diag_match_mean": match_sum / total_float,
+        "diag_inlier_mean": inlier_sum / total_float,
+        "diag_inlier_ratio_mean": ratio_sum / total_float,
+        "diag_parallax_median": parallax_median.value(),
+        "diag_score_mean": score_sum / total_float,
+    }
+    for method, count in method_counts.items():
+        safe_method = sanitize_artifact_name(method)
+        metrics[f"diag_method_{safe_method}_count"] = float(count)
+        metrics[f"diag_method_{safe_method}_ratio"] = float(count / total_float)
+    for status, count in status_counts.items():
+        safe_status = sanitize_artifact_name(status)
+        metrics[f"diag_status_{safe_status}_count"] = float(count)
+        metrics[f"diag_status_{safe_status}_ratio"] = float(count / total_float)
+    if failure_counts:
+        failures_total = float(sum(failure_counts.values()))
+        for reason, count in failure_counts.items():
+            safe_reason = sanitize_artifact_name(reason)
+            metrics[f"diag_failure_{safe_reason}_count"] = float(count)
+            metrics[f"diag_failure_{safe_reason}_ratio"] = float(count / failures_total)
+    return metrics
 
 
 def summarize_frame_diagnostics(bundle: FrameDiagnosticsBundle) -> dict[str, float]:
