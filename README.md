@@ -321,6 +321,10 @@ config that references evaluation configs and baseline thresholds:
 python benchmark_regression_gate.py --config configs/evaluation/regression_gate.json
 ```
 
+Evaluation configs can also gate relocalization recovery metrics (success rate +
+latency) by pointing the harness at relocalization demo reports and specifying
+baseline thresholds under `baseline.relocalization`.
+
 **Results table (fill with your runs):**
 
 | Dataset | Sequence | ATE (m) | RPE (m) | Notes |
