@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -24,7 +25,7 @@ from robust_pose_estimator import (
     RobustPoseEstimator,
     RobustPoseEstimatorConfig,
 )
-from run_telemetry import RunTelemetryRecorder, TelemetrySink, timed_event
+from run_telemetry import RunTelemetryRecorder, TelemetryEvent, TelemetrySink, timed_event
 from keyframe_manager import KeyframeManager
 from map_builder import MapBuilderConfig, MapBuildStats, MapSnapshotBuilder
 from persistent_map import MapRelocalizer, PersistentMapSnapshot, PersistentMapStore
@@ -212,6 +213,29 @@ class SLAMSystem:
         self._append_pose_with_diagnostics(timestamp, pose_estimate.diagnostics)
         self._maybe_add_keyframe(kp, desc)
         return self._current_pose.copy()
+
+    def inject_tracking_loss(self, reason: str | None = None) -> None:
+        """Force a tracking loss by clearing frame-to-frame correspondence state."""
+
+        if self._prev_frame is None:
+            raise RuntimeError("Tracking loss injection requires at least one processed frame")
+        self._prev_kp = None
+        self._prev_desc = None
+        event = TelemetryEvent(
+            name="tracking_loss_injected",
+            duration_s=0.0,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            metadata={
+                "frame_id": self._frame_id,
+                "reason": reason or "unspecified",
+            },
+        )
+        self.telemetry.record_event(event)
+        LOGGER.warning(
+            "Tracking loss injected at frame %d",
+            self._frame_id,
+            extra={"reason": reason},
+        )
 
     def run_sequence(self, frames: Iterable[np.ndarray], timestamps: Iterable[float]) -> SLAMRunResult:
         for frame, timestamp in zip(frames, timestamps):

@@ -93,10 +93,11 @@ See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
   add a streaming summarizer for very long runs.
 
 ## Project Status (Interview Readiness)
-**Status**: Partial. CI-ready benchmark automation, persistent map +
-relocalization wiring, and multi-camera rig calibration validation are now in
-place. Multi-camera ingestion/synchronization is now validated, but an
-end-to-end relocalization demo with recovery remains incomplete.
+**Status**: Partial (improving). The relocalization demo + recovery benchmark
+now showcases end-to-end tracking-loss injection with telemetry-backed latency
+metrics, alongside existing CI-ready benchmark automation and persistent map
+capabilities. Remaining gaps are mostly in regression gating for the new
+relocalization metrics and calibration drift validation.
 
 ## Minimal Gaps Checklist
 - ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
@@ -107,12 +108,15 @@ end-to-end relocalization demo with recovery remains incomplete.
 - ✅ Persistent map + relocalization pipeline wiring (snapshot build + recovery hooks).
 - ✅ Multi-camera rig abstraction + calibration validation for stereo/multi-view datasets.
 - ✅ Multi-camera ingestion + synchronization pipeline for stereo/multi-view datasets.
-- ⏳ End-to-end relocalization demo sequence with tracking-loss recovery.
+- ✅ End-to-end relocalization demo sequence with tracking-loss recovery.
+- ⏳ Regression gating for relocalization recovery metrics (success rate + latency).
+- ⏳ Calibration drift regression checks (baseline/intrinsics) wired into CI gate configs.
+- ⏳ Asynchronous ingestion + failure isolation for long-running multi-sequence runs.
 
 ## Follow-up Tasks (Post-Implementation)
-- Add calibration regression gates (baseline drift, intrinsics drift) into the
-  benchmark runner for KITTI stereo sequences.
-- Integrate multi-camera synchronization into the SLAM API for stereo/multi-view
-  experiments with explicit latency diagnostics.
-- Add an end-to-end relocalization demo script that loads a saved map snapshot,
-  forces a tracking loss, and verifies recovery on KITTI sequences.
+- Add regression thresholds for relocalization success rate and latency to the
+  benchmark regression gate (fail fast on recovery degradations).
+- Extend the relocalization demo to optionally load a persisted map snapshot
+  and compare recovery performance across runs.
+- Add calibration drift regression gates (baseline + intrinsics deltas) into
+  KITTI CI benchmark configs.
