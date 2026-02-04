@@ -135,7 +135,11 @@ pipeline settings, and baseline regression checks in one file:
   "baseline": {
     "store_path": "reports/baselines.json",
     "key": "kitti_00",
-    "thresholds": { "ate": 0.05, "rpe": 0.02 }
+    "thresholds": {
+      "ate": { "direction": "lower", "tolerance": 0.05 },
+      "rpe": { "direction": "lower", "tolerance": 0.02 },
+      "mean_inlier_ratio": { "direction": "higher", "tolerance": 0.03 }
+    }
   },
   "evaluation": {
     "kitti_root": "/data/kitti",
@@ -190,6 +194,11 @@ When `est_run_dir` is provided and a `diagnostics/frame_diagnostics.json` file
 is present, the evaluation harness will attach a per-sequence diagnostics
 summary to the report payload and merge the diagnostic metrics (e.g., mean
 inlier ratio, method selection ratios) into the sequence metrics.
+
+Baseline thresholds support directional tolerances for diagnostics-heavy
+metrics. Use `"direction": "higher"` for metrics that should not decrease (such
+as inlier ratios) and `"direction": "lower"` for error metrics (ATE/RPE). You
+can also pass a scalar threshold to enforce a max-delta regression check.
 
 You can also use `kitti_dataset.py` directly to iterate frames and parse
 calibration.
