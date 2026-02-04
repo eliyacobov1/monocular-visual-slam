@@ -52,10 +52,10 @@
   into memory; migrate to a streaming summarizer for very long runs.
 
 ## Project Status (Interview Readiness)
-**Status**: Partial. CI-ready benchmark automation with severity scoring is now
-available, and persistent map + relocalization wiring is implemented, but
-multi-sensor extensibility and end-to-end relocalization demos remain the
-primary gaps.
+**Status**: Partial. CI-ready benchmark automation, persistent map +
+relocalization wiring, and multi-camera rig calibration validation are now
+available, but multi-camera ingestion/synchronization and end-to-end
+relocalization demos remain the primary gaps.
 
 ## Minimal Gaps Checklist
 - ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
@@ -64,12 +64,14 @@ primary gaps.
 - ✅ Telemetry latency regression thresholds alongside ATE/RPE baselines.
 - ✅ CI-ready benchmark harness wiring for performance regression detection.
 - ✅ Persistent map + relocalization pipeline wiring (snapshot build + recovery hooks).
-- ⏳ Multi-camera rig abstraction + calibration validation for stereo/multi-view datasets.
+- ✅ Multi-camera rig abstraction + calibration validation for stereo/multi-view datasets.
+- ⏳ Multi-camera ingestion + synchronization pipeline for stereo/multi-view datasets.
+- ⏳ End-to-end relocalization demo sequence with tracking-loss recovery.
 
 ## Follow-up Tasks (Post-Implementation)
+- Wire the multi-camera rig abstraction into dataset ingestion with explicit
+  sync/latency validation for stereo pairs.
+- Add calibration regression gates (baseline drift, intrinsics drift) into the
+  benchmark runner for KITTI stereo sequences.
 - Add an end-to-end relocalization demo script that loads a saved map snapshot,
   forces a tracking loss, and verifies recovery on KITTI sequences.
-- Export persistent map build statistics (vocabulary size, descriptor counts)
-  into the evaluation harness for regression tracking.
-- Add a CLI to benchmark relocalization latency/accuracy as part of the
-  regression gate alongside ATE/RPE.

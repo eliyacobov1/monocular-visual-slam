@@ -11,6 +11,8 @@ from typing import Iterator
 
 import numpy as np
 
+from camera_rig import CameraRig
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -202,3 +204,10 @@ class KittiSequence:
         except KeyError:
             return None
         return intrinsics_from_projection(P)
+
+    def camera_rig(self, camera_names: list[str] | None = None) -> CameraRig | None:
+        if not self.calib:
+            return None
+        return CameraRig.from_kitti_calibration(
+            self.calib, camera_names=camera_names, reference_camera=self.camera
+        )
