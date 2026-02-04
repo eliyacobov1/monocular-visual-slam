@@ -33,3 +33,23 @@ def test_upsert_and_compare_baseline(tmp_path: Path) -> None:
 
     assert comparison.status == "pass"
     assert comparison.per_metric["ate"]["status"] == "pass"
+    assert comparison.stats["evaluated_metrics"] == 2.0
+    assert comparison.stats["comparison_time_ms"] >= 0.0
+
+
+def test_compare_supports_directional_thresholds() -> None:
+    baseline = {"metrics": {"inlier_ratio": 0.6, "ate": 0.3}}
+
+    comparison = compare_metrics(
+        "kitti_00",
+        current={"inlier_ratio": 0.52, "ate": 0.33},
+        baseline=baseline,
+        thresholds={
+            "inlier_ratio": {"direction": "higher", "tolerance": 0.05},
+            "ate": {"direction": "lower", "tolerance": 0.02},
+        },
+    )
+
+    assert comparison.per_metric["inlier_ratio"]["status"] == "regressed"
+    assert comparison.per_metric["ate"]["status"] == "regressed"
+    assert comparison.status == "regressed"

@@ -52,18 +52,20 @@
   into memory; migrate to a streaming summarizer for very long runs.
 
 ## Project Status (Interview Readiness)
-**Status**: Partial. Core pipeline, diagnostics, and evaluation are strong, and
-streaming summarization now handles long sequences, but regression gates and
-CI-ready benchmark automation still need to mature.
+**Status**: Partial. Diagnostics-aware baseline regression thresholds are now
+supported, but CI-ready benchmark automation and telemetry regression gating
+remain the primary gaps.
 
 ## Minimal Gaps Checklist
 - ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
 - ✅ Streaming diagnostics + telemetry summarizers for long KITTI runs.
-- ⏳ Regression gate thresholds for diagnostics metrics alongside ATE/RPE.
+- ✅ Regression gate thresholds for diagnostics metrics alongside ATE/RPE.
 - ⏳ CI-ready benchmark harness wiring for performance regression detection.
 
 ## Follow-up Tasks (Post-Implementation)
-- Extend regression gate configs to enforce diagnostics status/failure ratios.
-- Build a CLI to compare diagnostics status/failure distributions across runs.
+- Extend regression gate configs with schema validation and diagnostics
+  threshold presets for KITTI/TUM.
+- Build a CLI to compare diagnostics regression outcomes across runs and flag
+  directional threshold deltas.
 - Add JSONL or chunked telemetry storage with schema/version validation for
   long-run robustness.

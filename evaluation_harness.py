@@ -70,7 +70,7 @@ class EvaluationConfig:
     telemetry_name: str
     baseline_store: Path | None
     baseline_key: str | None
-    baseline_thresholds: dict[str, float] | None
+    baseline_thresholds: dict[str, float | dict[str, Any]] | None
     write_baseline: bool
 
 
@@ -582,6 +582,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
                 "key": comparison.key,
                 "status": comparison.status,
                 "per_metric": comparison.per_metric,
+                "stats": comparison.stats,
             }
             summary["baseline_comparison"] = baseline_comparison
             write_json_report(output_dir / "baseline_comparison.json", baseline_comparison)
