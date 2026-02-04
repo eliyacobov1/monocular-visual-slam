@@ -115,6 +115,16 @@ Run the evaluation harness (ATE/RPE):
 python evaluation_harness.py --config configs/evaluation/kitti_odometry.json
 ```
 
+Run the CI benchmark suite (includes baseline regression checks and severity scoring):
+
+```bash
+python benchmark_ci_runner.py --config configs/evaluation/ci_benchmark.json
+```
+
+The CI runner aggregates regression gate results, computes a severity score
+from baseline deltas, and writes a machine-readable summary to the configured
+output path (defaults to `reports/ci_benchmark_summary.json`).
+
 You can also use a unified experiment config that captures run metadata,
 pipeline settings, and baseline regression checks in one file:
 

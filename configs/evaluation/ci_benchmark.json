@@ -1,0 +1,27 @@
+{
+  "runs": [
+    {
+      "name": "kitti_odometry_smoke",
+      "config_path": "kitti_odometry.json",
+      "require_baseline": true
+    },
+    {
+      "name": "tum_freiburg1_smoke",
+      "config_path": "tum_freiburg1.json",
+      "require_baseline": true
+    }
+  ],
+  "output_path": "reports/ci_benchmark_summary.json",
+  "max_workers": 1,
+  "fail_fast": true,
+  "severity": {
+    "default_weight": 1.0,
+    "metric_weights": {
+      "ATE_RMSE": 2.0,
+      "RPE_RMSE": 1.5
+    },
+    "telemetry_weights": {
+      "telemetry_mean_duration_s": 1.0
+    }
+  }
+}
