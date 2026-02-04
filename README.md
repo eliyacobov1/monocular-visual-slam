@@ -139,6 +139,12 @@ pipeline settings, and baseline regression checks in one file:
       "ate": { "direction": "lower", "tolerance": 0.05 },
       "rpe": { "direction": "lower", "tolerance": 0.02 },
       "mean_inlier_ratio": { "direction": "higher", "tolerance": 0.03 }
+    },
+    "telemetry": {
+      "thresholds": {
+        "telemetry_mean_duration_s": { "direction": "lower", "tolerance": 0.02 },
+        "telemetry_stage_feature_detect_p95_duration_s": { "direction": "lower", "tolerance": 0.01 }
+      }
     }
   },
   "evaluation": {
@@ -199,6 +205,12 @@ Baseline thresholds support directional tolerances for diagnostics-heavy
 metrics. Use `"direction": "higher"` for metrics that should not decrease (such
 as inlier ratios) and `"direction": "lower"` for error metrics (ATE/RPE). You
 can also pass a scalar threshold to enforce a max-delta regression check.
+
+Telemetry regression gating is configured under `baseline.telemetry`. The
+evaluation harness derives latency metrics (global totals and per-stage
+mean/p95/max durations) from the telemetry summary and compares them against
+their own baseline entry. If you omit `baseline.telemetry.key`, it defaults to
+`<baseline.key>_telemetry`.
 
 You can also use `kitti_dataset.py` directly to iterate frames and parse
 calibration.

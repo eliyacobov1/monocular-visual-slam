@@ -93,20 +93,21 @@ See `DEVELOPMENT_TASKS.md` for detailed near-term and long-term tasks.
   add a streaming summarizer for very long runs.
 
 ## Project Status (Interview Readiness)
-**Status**: Partial. The evaluation harness now supports diagnostics-aware
-baseline regression thresholds with directional tolerances, but CI-ready
-benchmark automation and telemetry regression gating remain unfinished.
+**Status**: Partial. Diagnostics-aware baseline regression thresholds and
+telemetry regression gating are in place, but CI-ready benchmark automation
+and telemetry-focused CI integration remain unfinished.
 
 ## Minimal Gaps Checklist
 - ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
 - ✅ Streaming diagnostics + telemetry summarizers for long KITTI runs.
 - ✅ Regression gate thresholds for diagnostics metrics alongside ATE/RPE.
+- ✅ Telemetry latency regression thresholds alongside ATE/RPE baselines.
 - ⏳ CI-ready benchmark harness wiring for performance regression detection.
 
 ## Follow-up Tasks (Post-Implementation)
 - Add schema validation + templating for regression gate configs, including
-  diagnostics threshold presets for KITTI/TUM.
-- Build a CLI to compare diagnostics regression outcomes across runs and
-  visualize directional threshold deltas.
-- Add JSONL or chunked telemetry storage with schema/version validation to
-  further reduce memory pressure during long runs.
+  diagnostics and telemetry threshold presets for KITTI/TUM.
+- Build a CLI to compare telemetry + diagnostics regression outcomes across
+  runs and visualize directional threshold deltas.
+- Add telemetry regression exports (CSV/JSON) that correlate latency drift
+  with ATE/RPE changes for CI dashboards.
