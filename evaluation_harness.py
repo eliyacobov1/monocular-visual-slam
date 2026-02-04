@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import random
-import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,6 +73,9 @@ class EvaluationConfig:
     baseline_key: str | None
     baseline_thresholds: dict[str, float | dict[str, Any]] | None
     write_baseline: bool
+    telemetry_baseline_key: str | None
+    telemetry_baseline_thresholds: dict[str, float | dict[str, Any]] | None
+    write_telemetry_baseline: bool
 
 
 def _timestamp() -> str:
@@ -258,6 +262,14 @@ def load_config(config_path: Path) -> EvaluationConfig:
     baseline_key = baseline_config.get("key") if baseline_config else None
     baseline_thresholds = baseline_config.get("thresholds") if baseline_config else None
     write_baseline = bool(baseline_config.get("write", False)) if baseline_config else False
+    telemetry_config = baseline_config.get("telemetry", {}) if baseline_config else {}
+    telemetry_baseline_key = telemetry_config.get("key") if telemetry_config else None
+    telemetry_baseline_thresholds = telemetry_config.get("thresholds") if telemetry_config else None
+    write_telemetry_baseline = (
+        bool(telemetry_config.get("write", False)) if telemetry_config else False
+    )
+    if telemetry_baseline_thresholds and telemetry_baseline_key is None and baseline_key:
+        telemetry_baseline_key = f"{baseline_key}_telemetry"
 
     return EvaluationConfig(
         run_id=run_id,
@@ -275,6 +287,9 @@ def load_config(config_path: Path) -> EvaluationConfig:
         baseline_key=str(baseline_key) if baseline_key else None,
         baseline_thresholds=baseline_thresholds,
         write_baseline=write_baseline,
+        telemetry_baseline_key=str(telemetry_baseline_key) if telemetry_baseline_key else None,
+        telemetry_baseline_thresholds=telemetry_baseline_thresholds,
+        write_telemetry_baseline=write_telemetry_baseline,
     )
 
 
@@ -406,6 +421,30 @@ class _TelemetryAccumulator:
             "mean_duration_s": float(mean_duration),
             "per_stage": per_stage,
         }
+
+
+def _normalize_metric_name(value: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower())
+    return normalized.strip("_") or "unknown"
+
+
+def _telemetry_metrics_from_summary(summary: dict[str, Any]) -> dict[str, float]:
+    if not summary:
+        return {}
+    metrics: dict[str, float] = {
+        "telemetry_event_count": float(summary.get("event_count", 0.0)),
+        "telemetry_total_duration_s": float(summary.get("total_duration_s", 0.0)),
+        "telemetry_mean_duration_s": float(summary.get("mean_duration_s", 0.0)),
+    }
+    per_stage = summary.get("per_stage", {})
+    if isinstance(per_stage, dict):
+        for stage, stats in per_stage.items():
+            prefix = f"telemetry_stage_{_normalize_metric_name(str(stage))}"
+            metrics[f"{prefix}_count"] = float(stats.get("count", 0.0))
+            metrics[f"{prefix}_mean_duration_s"] = float(stats.get("mean_duration_s", 0.0))
+            metrics[f"{prefix}_p95_duration_s"] = float(stats.get("p95_duration_s", 0.0))
+            metrics[f"{prefix}_max_duration_s"] = float(stats.get("max_duration_s", 0.0))
+    return metrics
 
 
 def _summarize_telemetry_streaming(
@@ -551,6 +590,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
 
     aggregate = _aggregate_metrics(per_sequence_metrics)
     telemetry_summary = telemetry_accumulator.summarize() if telemetry_accumulator.total_events else {}
+    telemetry_metrics = _telemetry_metrics_from_summary(telemetry_summary)
     summary = {
         "run_id": config.run_id,
         "dataset": config.dataset,
@@ -560,16 +600,23 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         "config_hash": config.config_hash,
         "run_dir": str(output_dir),
         "run_metadata": str(artifacts.metadata_path),
+        "baseline_key": config.baseline_key,
+        "telemetry_baseline_key": config.telemetry_baseline_key,
         "aggregate_metrics": aggregate,
         "telemetry_summary": telemetry_summary,
+        "telemetry_metrics": telemetry_metrics,
         "telemetry_per_sequence": per_sequence_telemetry,
         "per_sequence": per_sequence_reports,
     }
 
     baseline_comparison = None
-    if config.baseline_store and config.baseline_key:
+    telemetry_baseline_comparison = None
+    store = None
+    baselines: dict[str, Any] = {}
+    if config.baseline_store:
         store = load_baseline_store(config.baseline_store)
         baselines = store.get("baselines", {})
+    if config.baseline_store and config.baseline_key:
         baseline = baselines.get(config.baseline_key)
         if baseline:
             comparison = compare_metrics(
@@ -602,6 +649,51 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
             metadata={"dataset": config.dataset, "run_id": config.run_id},
         )
         LOGGER.info("Baseline '%s' updated at %s", config.baseline_key, config.baseline_store)
+
+    if config.baseline_store and config.telemetry_baseline_key:
+        baseline = baselines.get(config.telemetry_baseline_key) if baselines else None
+        if baseline:
+            comparison = compare_metrics(
+                config.telemetry_baseline_key,
+                telemetry_metrics,
+                baseline,
+                config.telemetry_baseline_thresholds,
+            )
+            telemetry_baseline_comparison = {
+                "key": comparison.key,
+                "status": comparison.status,
+                "per_metric": comparison.per_metric,
+                "stats": comparison.stats,
+            }
+            summary["telemetry_baseline_comparison"] = telemetry_baseline_comparison
+            write_json_report(
+                output_dir / "telemetry_baseline_comparison.json",
+                telemetry_baseline_comparison,
+            )
+            LOGGER.info(
+                "Telemetry baseline comparison for %s: %s",
+                config.telemetry_baseline_key,
+                comparison.status,
+            )
+        else:
+            LOGGER.warning(
+                "Telemetry baseline key '%s' not found in %s",
+                config.telemetry_baseline_key,
+                config.baseline_store,
+            )
+    if config.baseline_store and config.telemetry_baseline_key and config.write_telemetry_baseline:
+        upsert_baseline(
+            config.baseline_store,
+            config.telemetry_baseline_key,
+            telemetry_metrics,
+            config.config_hash,
+            metadata={"dataset": config.dataset, "run_id": config.run_id, "telemetry": True},
+        )
+        LOGGER.info(
+            "Telemetry baseline '%s' updated at %s",
+            config.telemetry_baseline_key,
+            config.baseline_store,
+        )
 
     write_json_report(output_dir / "summary.json", summary)
     _write_summary_csv(output_dir / "summary.csv", per_sequence_metrics, aggregate)

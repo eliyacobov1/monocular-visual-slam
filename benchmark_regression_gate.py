@@ -73,9 +73,17 @@ async def _run_single(run: GateRun) -> dict[str, Any]:
     summary = await asyncio.to_thread(run_evaluation, eval_config)
 
     baseline_comparison = summary.get("baseline_comparison")
-    if baseline_comparison is None and run.require_baseline:
+    telemetry_comparison = summary.get("telemetry_baseline_comparison")
+    baseline_key = summary.get("baseline_key")
+    telemetry_baseline_key = summary.get("telemetry_baseline_key")
+
+    if run.require_baseline and baseline_key and baseline_comparison is None:
+        status = "missing_baseline"
+    elif run.require_baseline and telemetry_baseline_key and telemetry_comparison is None:
         status = "missing_baseline"
     elif baseline_comparison and baseline_comparison.get("status") == "regressed":
+        status = "regressed"
+    elif telemetry_comparison and telemetry_comparison.get("status") == "regressed":
         status = "regressed"
     else:
         status = "pass"
@@ -87,7 +95,9 @@ async def _run_single(run: GateRun) -> dict[str, Any]:
         "config_path": str(run.config_path),
         "config_hash": summary.get("config_hash"),
         "aggregate_metrics": summary.get("aggregate_metrics", {}),
+        "telemetry_metrics": summary.get("telemetry_metrics", {}),
         "baseline_comparison": baseline_comparison,
+        "telemetry_baseline_comparison": telemetry_comparison,
     }
     LOGGER.info("Gate run finished", extra={"run": run.name, "status": status})
     return result
