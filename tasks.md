@@ -1,34 +1,40 @@
 # Tasks
 
 ## North-Star Engineering Milestones (Senior-Grade)
-1. **Async Ingestion Control Plane**
-   - Adaptive queues, dynamic worker scaling, and failure isolation with
-     structured telemetry summaries.
-   - CI gating for throughput/latency regressions plus per-sequence fault
-     recovery policies (skip, retry, degrade).
+1. **Ingestion Control Plane 2.0**
+   - Multi-stage supervisors with circuit breakers, deterministic ordering
+     buffers, and structured telemetry streaming into CI artifacts.
+   - Process-backed decode isolation + adaptive queue sizing policies with
+     regression thresholds for latency drift.
 
-2. **Graph-Optimization Re-Architecture**
-   - Modular pose-graph backend with pluggable solvers (SE(3)/Sim(3)), robust
-     loss selection per constraint type, and deterministic config snapshots.
-   - Solver regression tests + reproducibility artifacts.
+2. **Graph Optimization Re-Architecture**
+   - Modular backend with pluggable solvers (SE(3)/Sim(3)), robust-loss
+     selection, and deterministic solver snapshots for reproducibility.
+   - End-to-end regression harness for ATE/RPE and loop-closure stability.
 
 3. **Calibration Drift Gates**
-   - Automated intrinsics/baseline drift checks with gating thresholds and
-     persisted calibration snapshots.
-   - CI report attachments for auditability and diagnostics.
+   - Automated intrinsics/baseline delta checks with persisted snapshots and
+     per-camera drift dashboards for KITTI/TUM.
+   - CI gates on drift thresholds with artifact persistence.
 
 4. **Relocalization Benchmark Pack**
-   - Multi-injection tracking-loss tests with confidence intervals, latency
-     regressions, and recovery success metrics.
+   - Multi-injection tracking-loss evaluations, confidence intervals, and
+     recovery-latency regressions wired into CI.
 
 5. **Telemetry Comparison CLI**
-   - Cross-run latency drift analysis, CSV export, and regression gating for
-     stage-level metrics (detect/match/pose).
+   - Cross-run latency drift analysis with CSV/JSON exports, regression gating,
+     and visual summaries for stage-level metrics.
+
+6. **Multi-Sensor Expansion Blueprint**
+   - IMU/GPS fusion interface with deterministic synchronization, plus C++ hook
+     scaffolding for latency-critical tracking/optimization.
 
 ## Active Focus (Phase 1)
-- Ship ingestion control-plane telemetry with adaptive queue tuning, dynamic
-  worker scaling, and failure summaries in evaluation artifacts.
+- Deliver the ingestion control plane overhaul with deterministic ordering,
+  circuit-breaker isolation, and process-backed decode execution.
+- Expand stress-test coverage for concurrency and race-condition resilience.
 
 ## Backlog (High-Impact)
+- Loop-closure robustness tuning on KITTI with adversarial relocalization tests.
 - Multi-camera calibration ingestion + deterministic alignment tooling.
-- C++ hook scaffolding for latency-critical tracking or optimization stages.
+- Telemetry-driven regression dashboards for release readiness.

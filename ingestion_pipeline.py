@@ -1,14 +1,16 @@
-"""Asynchronous, bounded ingestion pipeline for frame decoding."""
+"""Asynchronous, bounded ingestion pipeline with adaptive control plane."""
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import random
 import threading
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Deque, Iterable, Iterator, Optional, Protocol, TypeVar
+from typing import Callable, Deque, Iterable, Iterator, Literal, Optional, Protocol, TypeVar
 
 import cv2
 import numpy as np
@@ -53,7 +55,7 @@ class QueueLike(Protocol[T]):
 
 
 class AdaptiveBoundedQueue(QueueLike[T]):
-    """Thread-safe bounded queue with adaptive capacity."""
+    """Thread-safe bounded queue with adaptive capacity and metrics."""
 
     def __init__(self, *, capacity: int, min_capacity: int, max_capacity: int) -> None:
         if min_capacity <= 0:
@@ -68,11 +70,14 @@ class AdaptiveBoundedQueue(QueueLike[T]):
         self._items: Deque[T] = deque()
         self._condition = threading.Condition()
         self._closed = False
+        self._blocked_puts = 0
+        self._blocked_gets = 0
 
     def put(self, item: T, timeout_s: float | None = None) -> None:
         with self._condition:
             start = time.perf_counter()
             while len(self._items) >= self._capacity and not self._closed:
+                self._blocked_puts += 1
                 remaining = None if timeout_s is None else timeout_s - (time.perf_counter() - start)
                 if remaining is not None and remaining <= 0:
                     raise BackpressureTimeout("Timed out waiting for queue space")
@@ -86,6 +91,7 @@ class AdaptiveBoundedQueue(QueueLike[T]):
         with self._condition:
             start = time.perf_counter()
             while not self._items and not self._closed:
+                self._blocked_gets += 1
                 remaining = None if timeout_s is None else timeout_s - (time.perf_counter() - start)
                 if remaining is not None and remaining <= 0:
                     raise BackpressureTimeout("Timed out waiting for queue data")
@@ -124,6 +130,16 @@ class AdaptiveBoundedQueue(QueueLike[T]):
                 return 0.0
             return len(self._items) / self._capacity
 
+    @property
+    def blocked_puts(self) -> int:
+        with self._condition:
+            return self._blocked_puts
+
+    @property
+    def blocked_gets(self) -> int:
+        with self._condition:
+            return self._blocked_gets
+
 
 @dataclass(frozen=True)
 class FrameSourceEntry:
@@ -133,6 +149,7 @@ class FrameSourceEntry:
     index: int
     timestamp: float
     path: Path
+    enqueued_at_s: float
 
 
 @dataclass(frozen=True)
@@ -142,6 +159,8 @@ class DecodedFrame:
     seq_id: int
     packet: FramePacket | None
     error: str | None
+    decode_s: float
+    queue_wait_s: float
 
 
 @dataclass(frozen=True)
@@ -167,6 +186,32 @@ class WorkerPoolConfig:
 
 
 @dataclass(frozen=True)
+class RetryPolicyConfig:
+    """Retry policy for decode failures."""
+
+    max_attempts: int = 2
+    backoff_s: float = 0.02
+    jitter_s: float = 0.01
+
+
+@dataclass(frozen=True)
+class CircuitBreakerConfig:
+    """Circuit breaker configuration for decode failures."""
+
+    failure_threshold: int = 5
+    recovery_timeout_s: float = 1.0
+    half_open_successes: int = 2
+
+
+@dataclass(frozen=True)
+class OrderingBufferConfig:
+    """Ordering buffer bounds for deterministic output."""
+
+    max_pending: int = 128
+    forced_flush_ratio: float = 0.75
+
+
+@dataclass(frozen=True)
 class IngestionPipelineConfig:
     """Configuration for the asynchronous ingestion pipeline."""
 
@@ -178,16 +223,23 @@ class IngestionPipelineConfig:
     max_frames: int | None = None
     fail_fast: bool = True
     decode_backend: int = cv2.IMREAD_COLOR
+    decode_executor: Literal["thread", "process"] = "thread"
+    inflight_limit: int = 8
     entry_queue_tuning: QueueTuningConfig = field(default_factory=QueueTuningConfig)
     output_queue_tuning: QueueTuningConfig = field(default_factory=QueueTuningConfig)
     worker_pool: WorkerPoolConfig = field(default_factory=WorkerPoolConfig)
     telemetry_window: int = 256
+    retry_policy: RetryPolicyConfig = field(default_factory=RetryPolicyConfig)
+    circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
+    ordering_buffer: OrderingBufferConfig = field(default_factory=OrderingBufferConfig)
 
     def __post_init__(self) -> None:
         if self.entry_queue_capacity <= 0 or self.output_queue_capacity <= 0:
             raise ValueError("Queue capacities must be positive")
         if self.num_decode_workers <= 0:
             raise ValueError("num_decode_workers must be positive")
+        if self.inflight_limit <= 0:
+            raise ValueError("inflight_limit must be positive")
         if not (self.entry_queue_tuning.min_capacity <= self.entry_queue_capacity <= self.entry_queue_tuning.max_capacity):
             raise ValueError("entry_queue_capacity must be within tuning bounds")
         if not (
@@ -209,6 +261,8 @@ class IngestionPipelineConfig:
                 supervisor_interval_s=self.worker_pool.supervisor_interval_s,
             ),
         )
+        if self.decode_executor == "process" and self.num_decode_workers < 1:
+            raise ValueError("num_decode_workers must be >= 1 for process executor")
 
 
 @dataclass
@@ -245,23 +299,41 @@ class QueuePressureSample:
     entry_depth_ratio: float
     output_depth_ratio: float
     worker_count: int
+    inflight_tasks: int
+
+
+@dataclass
+class LatencySample:
+    """Latency snapshot for decode and queue wait."""
+
+    timestamp_s: float
+    decode_s: float
+    queue_wait_s: float
 
 
 @dataclass
 class IngestionTelemetry:
-    """Telemetry samples for queue pressure and worker sizing."""
+    """Telemetry samples for queue pressure, worker sizing, and latency."""
 
     window: int = 256
     samples: Deque[QueuePressureSample] = field(default_factory=deque)
+    latencies: Deque[LatencySample] = field(default_factory=deque)
     worker_scale_ups: int = 0
     worker_scale_downs: int = 0
     queue_scale_ups: int = 0
     queue_scale_downs: int = 0
+    forced_flushes: int = 0
+    circuit_breaker_opens: int = 0
 
     def record_sample(self, sample: QueuePressureSample) -> None:
         if len(self.samples) >= self.window:
             self.samples.popleft()
         self.samples.append(sample)
+
+    def record_latency(self, latency: LatencySample) -> None:
+        if len(self.latencies) >= self.window:
+            self.latencies.popleft()
+        self.latencies.append(latency)
 
 
 @dataclass
@@ -274,10 +346,14 @@ class IngestionPipelineStats:
     decoded_frames: int = 0
     dropped_frames: int = 0
     read_failures: int = 0
+    decode_exceptions: int = 0
+    decode_retries: int = 0
     output_backpressure: int = 0
+    ordering_forced_flushes: int = 0
     max_entry_queue_depth: int = 0
     max_output_queue_depth: int = 0
     total_decode_s: float = 0.0
+    total_queue_wait_s: float = 0.0
     started_at_s: float | None = None
     finished_at_s: float | None = None
 
@@ -292,6 +368,99 @@ class IngestionPipelineStats:
         if self.started_at_s is None or self.finished_at_s is None:
             return None
         return self.finished_at_s - self.started_at_s
+
+
+class CircuitBreaker:
+    """Simple circuit breaker for decode stage isolation."""
+
+    def __init__(self, config: CircuitBreakerConfig) -> None:
+        self._config = config
+        self._lock = threading.Lock()
+        self._state: Literal["closed", "open", "half_open"] = "closed"
+        self._failure_count = 0
+        self._success_count = 0
+        self._opened_at_s: float | None = None
+
+    def allow(self) -> bool:
+        with self._lock:
+            if self._state == "closed":
+                return True
+            if self._state == "open":
+                if self._opened_at_s is None:
+                    return False
+                if (time.time() - self._opened_at_s) >= self._config.recovery_timeout_s:
+                    self._state = "half_open"
+                    self._success_count = 0
+                    return True
+                return False
+            return True
+
+    def record_success(self) -> None:
+        with self._lock:
+            if self._state == "half_open":
+                self._success_count += 1
+                if self._success_count >= self._config.half_open_successes:
+                    self._state = "closed"
+                    self._failure_count = 0
+                    self._success_count = 0
+
+    def record_failure(self) -> bool:
+        with self._lock:
+            self._failure_count += 1
+            if self._failure_count >= self._config.failure_threshold:
+                self._state = "open"
+                self._opened_at_s = time.time()
+                self._success_count = 0
+                return True
+            return False
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            return self._state
+
+
+class DeterministicReorderBuffer:
+    """Heap-backed ordering buffer that enforces deterministic output."""
+
+    def __init__(self, config: OrderingBufferConfig) -> None:
+        self._config = config
+        self._heap: list[tuple[int, int, DecodedFrame]] = []
+        self._forced_flushes = 0
+        self._counter = 0
+
+    def push(self, decoded: DecodedFrame) -> None:
+        import heapq
+
+        heapq.heappush(self._heap, (decoded.seq_id, self._counter, decoded))
+        self._counter += 1
+
+    def pop_ready(self, expected_seq: int) -> tuple[list[DecodedFrame], int]:
+        import heapq
+
+        ready: list[DecodedFrame] = []
+        while self._heap and self._heap[0][0] == expected_seq:
+            _, _, decoded = heapq.heappop(self._heap)
+            ready.append(decoded)
+            expected_seq += 1
+        if len(self._heap) >= self._config.max_pending:
+            forced = int(self._config.max_pending * self._config.forced_flush_ratio)
+            for _ in range(forced):
+                if not self._heap:
+                    break
+                _, _, decoded = heapq.heappop(self._heap)
+                ready.append(decoded)
+                expected_seq = max(expected_seq, decoded.seq_id + 1)
+                self._forced_flushes += 1
+        return ready, expected_seq
+
+    @property
+    def size(self) -> int:
+        return len(self._heap)
+
+    @property
+    def forced_flushes(self) -> int:
+        return self._forced_flushes
 
 
 class DynamicWorkerPool:
@@ -377,6 +546,13 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
         )
         self._retire_lock = threading.Lock()
         self._retire_requests = 0
+        self._breaker = CircuitBreaker(self._config.circuit_breaker)
+        self._ordering_buffer = DeterministicReorderBuffer(self._config.ordering_buffer)
+        self._inflight_lock = threading.Lock()
+        self._inflight_tasks = 0
+        self._executor: concurrent.futures.Executor | None = None
+        self._futures: dict[concurrent.futures.Future[np.ndarray | None], FrameSourceEntry] = {}
+        self._futures_lock = threading.Lock()
 
     @property
     def stats(self) -> IngestionPipelineStats:
@@ -397,8 +573,11 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
         producer = threading.Thread(target=self._run_producer, name="ingest-producer", daemon=True)
         self._threads.append(producer)
         producer.start()
-        for _ in range(self._config.worker_pool.min_workers):
-            self._spawn_worker()
+        if self._config.decode_executor == "process":
+            self._start_process_executor()
+        else:
+            for _ in range(self._config.worker_pool.min_workers):
+                self._spawn_worker()
         supervisor = threading.Thread(
             target=self._run_supervisor, name="ingest-supervisor", daemon=True
         )
@@ -410,8 +589,11 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
         self._stop_event.set()
         self._entry_queue.close()
         self._output_queue.close()
-        for _ in range(self._worker_pool.active_workers):
-            self._safe_put_entry(_WORKER_STOP)
+        if self._config.decode_executor == "process":
+            self._stop_process_executor()
+        else:
+            for _ in range(self._worker_pool.active_workers):
+                self._safe_put_entry(_WORKER_STOP)
         for thread in self._threads:
             thread.join(timeout=1.0)
 
@@ -426,13 +608,8 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
         self.start()
         expected_seq = 0
         completed_workers = 0
-        pending: list[tuple[int, DecodedFrame]] = []
         while True:
-            if (
-                self._producer_done.is_set()
-                and completed_workers >= self._worker_pool.total_spawned
-                and not pending
-            ):
+            if self._producer_done.is_set() and self._is_decode_stage_done(completed_workers):
                 break
             try:
                 item = self._output_queue.get(timeout_s=self._config.decode_timeout_s)
@@ -450,22 +627,54 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 completed_workers += 1
                 continue
             decoded = item
-            pending.append((decoded.seq_id, decoded))
-            pending.sort(key=lambda pair: pair[0])
-            while pending and pending[0][0] == expected_seq:
-                _, ready = pending.pop(0)
-                if ready.packet is None:
+            self._ordering_buffer.push(decoded)
+            ready, expected_seq = self._ordering_buffer.pop_ready(expected_seq)
+            if self._ordering_buffer.forced_flushes:
+                self._stats.ordering_forced_flushes = self._ordering_buffer.forced_flushes
+                self._telemetry.forced_flushes = self._ordering_buffer.forced_flushes
+            for ready_frame in ready:
+                if ready_frame.packet is None:
                     LOGGER.warning(
                         "Dropped frame during ingestion",
-                        extra={"seq_id": ready.seq_id, "error": ready.error},
+                        extra={"seq_id": ready_frame.seq_id, "error": ready_frame.error},
                     )
                 else:
                     self._stats.dequeued_entries += 1
-                    yield ready.packet
-                expected_seq += 1
+                    yield ready_frame.packet
         if self._error is not None:
             raise self._error
         self._stats.mark_finish()
+
+    def _start_process_executor(self) -> None:
+        if self._config.decode_executor != "process":
+            return
+        if self._config.num_decode_workers < 1:
+            raise ValueError("num_decode_workers must be >= 1 for process executor")
+        self._executor = concurrent.futures.ProcessPoolExecutor(
+            max_workers=self._config.num_decode_workers
+        )
+        dispatcher = threading.Thread(
+            target=self._run_dispatcher, name="ingest-dispatcher", daemon=True
+        )
+        collector = threading.Thread(
+            target=self._run_collector, name="ingest-collector", daemon=True
+        )
+        self._threads.extend([dispatcher, collector])
+        dispatcher.start()
+        collector.start()
+
+    def _stop_process_executor(self) -> None:
+        for _ in range(self._config.num_decode_workers):
+            self._safe_put_entry(_WORKER_STOP)
+        if self._executor is not None:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+
+    def _is_decode_stage_done(self, completed_workers: int) -> bool:
+        if self._config.decode_executor == "process":
+            with self._futures_lock:
+                inflight_empty = not self._futures
+            return inflight_empty and self._producer_done.is_set() and self._entry_queue.size == 0
+        return completed_workers >= self._worker_pool.total_spawned and self._ordering_buffer.size == 0
 
     def _spawn_worker(self) -> None:
         worker_index = self._worker_pool.register_spawn()
@@ -493,17 +702,20 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 time.sleep(self._config.worker_pool.supervisor_interval_s)
                 entry_ratio = self._entry_queue.depth_ratio
                 output_ratio = self._output_queue.depth_ratio
+                inflight = self._inflight_count
                 self._telemetry.record_sample(
                     QueuePressureSample(
                         timestamp_s=time.time(),
                         entry_depth_ratio=entry_ratio,
                         output_depth_ratio=output_ratio,
                         worker_count=self._worker_pool.active_workers,
+                        inflight_tasks=inflight,
                     )
                 )
                 self._tune_queue(self._entry_queue, self._config.entry_queue_tuning)
                 self._tune_queue(self._output_queue, self._config.output_queue_tuning)
-                self._tune_workers(entry_ratio)
+                if self._config.decode_executor == "thread":
+                    self._tune_workers(entry_ratio)
                 if self._producer_done.is_set() and self._entry_queue.size == 0:
                     break
         except Exception as exc:  # pragma: no cover - supervisor failure
@@ -544,11 +756,12 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                     index=int(index),
                     timestamp=float(timestamp) if timestamp is not None else float(index),
                     path=path,
+                    enqueued_at_s=time.perf_counter(),
                 )
                 if not self._safe_put_entry(entry):
                     self._stats.dropped_entries += 1
                     self._record_failure(seq_id, "entry_queue_timeout", "entry_queue_timeout", path)
-                    self._emit_drop_marker(seq_id, "entry_queue_timeout")
+                    self._emit_drop_marker(seq_id, "entry_queue_timeout", 0.0, 0.0)
                     continue
                 self._stats.enqueued_entries += 1
                 self._stats.max_entry_queue_depth = max(
@@ -575,34 +788,53 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 if entry is _WORKER_STOP:
                     break
                 frame_entry = entry
-                start = time.perf_counter()
-                frame = self._read_fn(str(frame_entry.path), self._config.decode_backend)
-                self._stats.total_decode_s += time.perf_counter() - start
+                if not self._breaker.allow():
+                    error = "circuit_breaker_open"
+                    self._stats.dropped_frames += 1
+                    self._telemetry.circuit_breaker_opens += 1
+                    self._record_failure(frame_entry.seq_id, "circuit_breaker", error, frame_entry.path)
+                    self._emit_drop_marker(frame_entry.seq_id, error, 0.0, 0.0)
+                    if self._config.fail_fast:
+                        raise RuntimeError("Circuit breaker open")
+                    continue
+                decode_start = time.perf_counter()
+                frame = self._decode_with_retries(frame_entry)
+                decode_s = time.perf_counter() - decode_start
+                self._stats.total_decode_s += decode_s
+                queue_wait_s = max(0.0, decode_start - frame_entry.enqueued_at_s)
+                self._stats.total_queue_wait_s += queue_wait_s
                 if frame is None:
                     self._stats.read_failures += 1
                     error = f"Failed to read frame: {frame_entry.path}"
+                    breaker_opened = self._breaker.record_failure()
+                    if breaker_opened:
+                        self._telemetry.circuit_breaker_opens += 1
                     self._record_failure(frame_entry.seq_id, "read", error, frame_entry.path)
                     if self._config.fail_fast:
                         raise RuntimeError(error)
                     self._stats.dropped_frames += 1
-                    self._emit_drop_marker(frame_entry.seq_id, error)
+                    self._emit_drop_marker(frame_entry.seq_id, error, decode_s, queue_wait_s)
                     continue
+                self._breaker.record_success()
                 packet = FramePacket(
                     index=frame_entry.index,
                     timestamp=frame_entry.timestamp,
                     frame=frame,
                     path=frame_entry.path,
                 )
-                if not self._safe_put_output(DecodedFrame(frame_entry.seq_id, packet, None)):
+                if not self._safe_put_output(DecodedFrame(frame_entry.seq_id, packet, None, decode_s, queue_wait_s)):
                     self._stats.output_backpressure += 1
                     error = "output_queue_timeout"
                     self._record_failure(frame_entry.seq_id, "output", error, frame_entry.path)
                     if self._config.fail_fast:
                         raise BackpressureTimeout("Output queue backpressure")
                     self._stats.dropped_frames += 1
-                    self._emit_drop_marker(frame_entry.seq_id, error)
+                    self._emit_drop_marker(frame_entry.seq_id, error, decode_s, queue_wait_s)
                     continue
                 self._stats.decoded_frames += 1
+                self._telemetry.record_latency(
+                    LatencySample(timestamp_s=time.time(), decode_s=decode_s, queue_wait_s=queue_wait_s)
+                )
                 self._stats.max_output_queue_depth = max(
                     self._stats.max_output_queue_depth, self._output_queue.size
                 )
@@ -612,6 +844,149 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
         finally:
             self._worker_pool.register_exit()
             self._safe_put_output(_OUTPUT_SENTINEL)
+
+    def _run_dispatcher(self) -> None:
+        if self._executor is None:
+            return
+        try:
+            while True:
+                try:
+                    entry = self._entry_queue.get(timeout_s=self._config.read_timeout_s)
+                except BackpressureTimeout:
+                    if self._stop_event.is_set() or (self._producer_done.is_set() and self._entry_queue.size == 0):
+                        break
+                    continue
+                except IngestionClosed:
+                    break
+                if entry is _WORKER_STOP:
+                    break
+                if not self._breaker.allow():
+                    error = "circuit_breaker_open"
+                    self._stats.dropped_frames += 1
+                    self._telemetry.circuit_breaker_opens += 1
+                    self._record_failure(entry.seq_id, "circuit_breaker", error, entry.path)
+                    self._emit_drop_marker(entry.seq_id, error, 0.0, 0.0)
+                    if self._config.fail_fast:
+                        raise RuntimeError("Circuit breaker open")
+                    continue
+                self._wait_for_inflight_slot()
+                with self._futures_lock:
+                    future = self._executor.submit(self._read_fn, str(entry.path), self._config.decode_backend)
+                    self._futures[future] = entry
+                    self._increment_inflight(1)
+        except Exception as exc:  # pragma: no cover - dispatcher failure
+            self._error = exc
+            LOGGER.exception("Ingestion dispatcher failed")
+        finally:
+            self._safe_put_output(_OUTPUT_SENTINEL)
+
+    def _run_collector(self) -> None:
+        try:
+            while True:
+                if self._producer_done.is_set() and self._entry_queue.size == 0:
+                    with self._futures_lock:
+                        if not self._futures:
+                            break
+                done = self._poll_futures()
+                if not done:
+                    time.sleep(0.01)
+        except Exception as exc:  # pragma: no cover - collector failure
+            self._error = exc
+            LOGGER.exception("Ingestion collector failed")
+        finally:
+            self._safe_put_output(_OUTPUT_SENTINEL)
+
+    def _poll_futures(self) -> list[concurrent.futures.Future[np.ndarray | None]]:
+        with self._futures_lock:
+            futures = list(self._futures.keys())
+        if not futures:
+            return []
+        done, _ = concurrent.futures.wait(
+            futures,
+            timeout=0.05,
+            return_when=concurrent.futures.FIRST_COMPLETED,
+        )
+        for future in done:
+            with self._futures_lock:
+                entry = self._futures.pop(future, None)
+            self._increment_inflight(-1)
+            if entry is None:
+                continue
+            decode_start = time.perf_counter()
+            try:
+                frame = future.result()
+            except Exception as exc:  # pragma: no cover - decode failure
+                self._stats.decode_exceptions += 1
+                error = f"decode_exception: {exc}"
+                breaker_opened = self._breaker.record_failure()
+                if breaker_opened:
+                    self._telemetry.circuit_breaker_opens += 1
+                self._record_failure(entry.seq_id, "decode_exception", error, entry.path)
+                if self._config.fail_fast:
+                    self._error = exc
+                    self._stop_event.set()
+                    continue
+                self._stats.dropped_frames += 1
+                self._emit_drop_marker(entry.seq_id, error, 0.0, 0.0)
+                continue
+            decode_s = time.perf_counter() - decode_start
+            self._stats.total_decode_s += decode_s
+            queue_wait_s = max(0.0, decode_start - entry.enqueued_at_s)
+            self._stats.total_queue_wait_s += queue_wait_s
+            if frame is None:
+                self._stats.read_failures += 1
+                error = f"Failed to read frame: {entry.path}"
+                breaker_opened = self._breaker.record_failure()
+                if breaker_opened:
+                    self._telemetry.circuit_breaker_opens += 1
+                self._record_failure(entry.seq_id, "read", error, entry.path)
+                if self._config.fail_fast:
+                    self._error = RuntimeError(error)
+                    self._stop_event.set()
+                    continue
+                self._stats.dropped_frames += 1
+                self._emit_drop_marker(entry.seq_id, error, decode_s, queue_wait_s)
+                continue
+            self._breaker.record_success()
+            packet = FramePacket(
+                index=entry.index,
+                timestamp=entry.timestamp,
+                frame=frame,
+                path=entry.path,
+            )
+            if not self._safe_put_output(DecodedFrame(entry.seq_id, packet, None, decode_s, queue_wait_s)):
+                self._stats.output_backpressure += 1
+                error = "output_queue_timeout"
+                self._record_failure(entry.seq_id, "output", error, entry.path)
+                if self._config.fail_fast:
+                    self._error = BackpressureTimeout("Output queue backpressure")
+                    self._stop_event.set()
+                    continue
+                self._stats.dropped_frames += 1
+                self._emit_drop_marker(entry.seq_id, error, decode_s, queue_wait_s)
+                continue
+            self._stats.decoded_frames += 1
+            self._telemetry.record_latency(
+                LatencySample(timestamp_s=time.time(), decode_s=decode_s, queue_wait_s=queue_wait_s)
+            )
+            self._stats.max_output_queue_depth = max(
+                self._stats.max_output_queue_depth, self._output_queue.size
+            )
+        return list(done)
+
+    def _decode_with_retries(self, entry: FrameSourceEntry) -> np.ndarray | None:
+        attempt = 0
+        policy = self._config.retry_policy
+        while attempt < policy.max_attempts:
+            frame = self._read_fn(str(entry.path), self._config.decode_backend)
+            if frame is not None:
+                return frame
+            attempt += 1
+            if attempt < policy.max_attempts:
+                self._stats.decode_retries += 1
+                sleep_time = policy.backoff_s + random.random() * policy.jitter_s
+                time.sleep(sleep_time)
+        return None
 
     def _safe_put_entry(self, item: FrameSourceEntry | object) -> bool:
         try:
@@ -627,8 +1002,8 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
         except (BackpressureTimeout, IngestionClosed):
             return False
 
-    def _emit_drop_marker(self, seq_id: int, error: str) -> None:
-        if not self._safe_put_output(DecodedFrame(seq_id, None, error)):
+    def _emit_drop_marker(self, seq_id: int, error: str, decode_s: float, queue_wait_s: float) -> None:
+        if not self._safe_put_output(DecodedFrame(seq_id, None, error, decode_s, queue_wait_s)):
             self._stats.output_backpressure += 1
             if self._config.fail_fast:
                 self._error = BackpressureTimeout("Output queue backpressure during drop handling")
@@ -646,3 +1021,19 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
             "Ingestion failure",
             extra={"seq_id": seq_id, "stage": stage, "error": error, "path": str(path) if path else None},
         )
+
+    def _wait_for_inflight_slot(self) -> None:
+        while True:
+            with self._inflight_lock:
+                if self._inflight_tasks < self._config.inflight_limit:
+                    return
+            time.sleep(0.001)
+
+    def _increment_inflight(self, delta: int) -> None:
+        with self._inflight_lock:
+            self._inflight_tasks += delta
+
+    @property
+    def _inflight_count(self) -> int:
+        with self._inflight_lock:
+            return self._inflight_tasks

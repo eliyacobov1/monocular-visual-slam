@@ -34,17 +34,19 @@ components.
   summaries.
 
 ## Major technical milestones (Senior-level)
-- **Async ingestion control plane**: adaptive queue sizing, dynamic worker
-  scaling, structured failure recovery, and throughput/latency telemetry in CI
-  reports.
-- **Graph-optimization re-architecture**: modular backend with pluggable
-  solvers, robust losses, and deterministic config snapshots.
-- **Calibration drift gates**: automated baseline/intrinsics delta checks wired
-  into CI benchmark configs with artifact persistence.
-- **Relocalization benchmark pack**: multi-injection evaluations with
-  confidence intervals and latency regressions.
-- **Telemetry comparison CLI**: cross-run latency drift analysis and CSV export
-  with regression gating.
+- **Control-plane orchestration**: stage-level supervisors, circuit breakers,
+  deterministic ordering buffers, and structured latency telemetry wired into
+  CI outputs.
+- **Graph-optimization modularity**: pluggable solvers, robust-loss selection,
+  and deterministic solver snapshots with regression gates on accuracy.
+- **Calibration drift automation**: baseline/intrinsics deltas gated in CI with
+  artifact retention and visual diagnostics.
+- **Relocalization resilience**: multi-injection benchmark pack with confidence
+  intervals, recovery latency, and robustness scoring.
+- **Telemetry comparison tooling**: cross-run latency drift analysis, CSV export
+  APIs, and regression gating for stage-level metrics.
+- **Multi-sensor readiness**: extensible interface for IMU/GPS fusion and
+  C++ hooks for latency-critical tracking.
 
 ## Workflow notes
 - Update README or docs when behavior changes.

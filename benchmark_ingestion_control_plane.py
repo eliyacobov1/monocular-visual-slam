@@ -32,6 +32,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark ingestion control plane")
     parser.add_argument("--frames", type=int, default=500, help="Number of frames to ingest")
     parser.add_argument("--runs", type=int, default=3, help="Number of benchmark runs")
+    parser.add_argument(
+        "--executor",
+        choices=["thread", "process"],
+        default="thread",
+        help="Decode executor type",
+    )
     args = parser.parse_args()
 
     durations: list[float] = []
@@ -46,6 +52,8 @@ def main() -> None:
                 output_queue_capacity=8,
                 num_decode_workers=2,
                 fail_fast=True,
+                decode_executor=args.executor,
+                inflight_limit=16,
                 entry_queue_tuning=QueueTuningConfig(min_capacity=4, max_capacity=32, scale_step=4),
                 output_queue_tuning=QueueTuningConfig(min_capacity=4, max_capacity=32, scale_step=4),
                 worker_pool=WorkerPoolConfig(min_workers=2, max_workers=6, supervisor_interval_s=0.05),
@@ -65,6 +73,7 @@ def main() -> None:
     print("Ingestion Control Plane Benchmark")
     print(f"Runs: {args.runs}")
     print(f"Frames per run: {args.frames}")
+    print(f"Decode executor: {args.executor}")
     print(f"Duration (s) avg: {statistics.mean(durations):.4f}")
     print(f"Duration (s) p95: {statistics.quantiles(durations, n=20)[-1]:.4f}")
     print(f"Memory delta (bytes) avg: {int(statistics.mean(memory_deltas))}")
