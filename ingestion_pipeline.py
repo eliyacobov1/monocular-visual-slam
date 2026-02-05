@@ -7,15 +7,32 @@ import logging
 import random
 import threading
 import time
-from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Deque, Iterable, Iterator, Literal, Optional, Protocol, TypeVar
+from typing import Callable, Iterable, Iterator, Literal, Optional, TypeVar
 
 import cv2
 import numpy as np
 
 from frame_stream import FramePacket
+from ingestion_control_plane import (
+    AdaptiveBoundedQueue,
+    BackpressureTimeout,
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    ControlPlaneSupervisor,
+    DeterministicReorderBuffer,
+    DynamicWorkerPool,
+    IngestionClosed,
+    IngestionFailureEvent,
+    IngestionFailureReport,
+    IngestionTelemetry,
+    LatencySample,
+    OrderingBufferConfig,
+    QueueTuningConfig,
+    RetryPolicyConfig,
+    WorkerPoolConfig,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,122 +40,6 @@ _OUTPUT_SENTINEL = object()
 _WORKER_STOP = object()
 
 T = TypeVar("T")
-
-
-class IngestionClosed(RuntimeError):
-    """Raised when consuming from a closed ingestion pipeline."""
-
-
-class BackpressureTimeout(RuntimeError):
-    """Raised when backpressure blocks required pipeline operations."""
-
-
-class QueueLike(Protocol[T]):
-    """Minimal protocol for adaptive queues used by ingestion pipeline."""
-
-    def put(self, item: T, timeout_s: float | None = None) -> None:
-        ...
-
-    def get(self, timeout_s: float | None = None) -> T:
-        ...
-
-    def close(self) -> None:
-        ...
-
-    @property
-    def size(self) -> int:
-        ...
-
-    @property
-    def capacity(self) -> int:
-        ...
-
-
-class AdaptiveBoundedQueue(QueueLike[T]):
-    """Thread-safe bounded queue with adaptive capacity and metrics."""
-
-    def __init__(self, *, capacity: int, min_capacity: int, max_capacity: int) -> None:
-        if min_capacity <= 0:
-            raise ValueError("min_capacity must be positive")
-        if max_capacity < min_capacity:
-            raise ValueError("max_capacity must be >= min_capacity")
-        if capacity < min_capacity or capacity > max_capacity:
-            raise ValueError("capacity must be within min/max bounds")
-        self._capacity = capacity
-        self._min_capacity = min_capacity
-        self._max_capacity = max_capacity
-        self._items: Deque[T] = deque()
-        self._condition = threading.Condition()
-        self._closed = False
-        self._blocked_puts = 0
-        self._blocked_gets = 0
-
-    def put(self, item: T, timeout_s: float | None = None) -> None:
-        with self._condition:
-            start = time.perf_counter()
-            while len(self._items) >= self._capacity and not self._closed:
-                self._blocked_puts += 1
-                remaining = None if timeout_s is None else timeout_s - (time.perf_counter() - start)
-                if remaining is not None and remaining <= 0:
-                    raise BackpressureTimeout("Timed out waiting for queue space")
-                self._condition.wait(timeout=remaining)
-            if self._closed:
-                raise IngestionClosed("Queue is closed")
-            self._items.append(item)
-            self._condition.notify_all()
-
-    def get(self, timeout_s: float | None = None) -> T:
-        with self._condition:
-            start = time.perf_counter()
-            while not self._items and not self._closed:
-                self._blocked_gets += 1
-                remaining = None if timeout_s is None else timeout_s - (time.perf_counter() - start)
-                if remaining is not None and remaining <= 0:
-                    raise BackpressureTimeout("Timed out waiting for queue data")
-                self._condition.wait(timeout=remaining)
-            if not self._items:
-                raise IngestionClosed("Queue is closed")
-            item = self._items.popleft()
-            self._condition.notify_all()
-            return item
-
-    def close(self) -> None:
-        with self._condition:
-            self._closed = True
-            self._condition.notify_all()
-
-    def resize(self, new_capacity: int) -> None:
-        if new_capacity < self._min_capacity or new_capacity > self._max_capacity:
-            raise ValueError("new_capacity must be within min/max bounds")
-        with self._condition:
-            self._capacity = new_capacity
-            self._condition.notify_all()
-
-    @property
-    def capacity(self) -> int:
-        return self._capacity
-
-    @property
-    def size(self) -> int:
-        with self._condition:
-            return len(self._items)
-
-    @property
-    def depth_ratio(self) -> float:
-        with self._condition:
-            if self._capacity == 0:
-                return 0.0
-            return len(self._items) / self._capacity
-
-    @property
-    def blocked_puts(self) -> int:
-        with self._condition:
-            return self._blocked_puts
-
-    @property
-    def blocked_gets(self) -> int:
-        with self._condition:
-            return self._blocked_gets
 
 
 @dataclass(frozen=True)
@@ -164,54 +65,6 @@ class DecodedFrame:
 
 
 @dataclass(frozen=True)
-class QueueTuningConfig:
-    """Adaptive queue tuning parameters."""
-
-    min_capacity: int = 16
-    max_capacity: int = 128
-    scale_up_ratio: float = 0.8
-    scale_down_ratio: float = 0.3
-    scale_step: int = 8
-
-
-@dataclass(frozen=True)
-class WorkerPoolConfig:
-    """Dynamic worker pool tuning parameters."""
-
-    min_workers: int = 2
-    max_workers: int = 6
-    scale_up_ratio: float = 0.75
-    scale_down_ratio: float = 0.2
-    supervisor_interval_s: float = 0.2
-
-
-@dataclass(frozen=True)
-class RetryPolicyConfig:
-    """Retry policy for decode failures."""
-
-    max_attempts: int = 2
-    backoff_s: float = 0.02
-    jitter_s: float = 0.01
-
-
-@dataclass(frozen=True)
-class CircuitBreakerConfig:
-    """Circuit breaker configuration for decode failures."""
-
-    failure_threshold: int = 5
-    recovery_timeout_s: float = 1.0
-    half_open_successes: int = 2
-
-
-@dataclass(frozen=True)
-class OrderingBufferConfig:
-    """Ordering buffer bounds for deterministic output."""
-
-    max_pending: int = 128
-    forced_flush_ratio: float = 0.75
-
-
-@dataclass(frozen=True)
 class IngestionPipelineConfig:
     """Configuration for the asynchronous ingestion pipeline."""
 
@@ -232,6 +85,7 @@ class IngestionPipelineConfig:
     retry_policy: RetryPolicyConfig = field(default_factory=RetryPolicyConfig)
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
     ordering_buffer: OrderingBufferConfig = field(default_factory=OrderingBufferConfig)
+    supervisor_ema_alpha: float = 0.25
 
     def __post_init__(self) -> None:
         if self.entry_queue_capacity <= 0 or self.output_queue_capacity <= 0:
@@ -263,77 +117,8 @@ class IngestionPipelineConfig:
         )
         if self.decode_executor == "process" and self.num_decode_workers < 1:
             raise ValueError("num_decode_workers must be >= 1 for process executor")
-
-
-@dataclass
-class IngestionFailureEvent:
-    """Structured failure event from ingestion stages."""
-
-    seq_id: int
-    stage: str
-    error: str
-    path: Path | None
-    timestamp_s: float = field(default_factory=time.time)
-
-
-@dataclass
-class IngestionFailureReport:
-    """Aggregated failure summary for ingestion pipeline."""
-
-    max_events: int = 256
-    events: Deque[IngestionFailureEvent] = field(default_factory=deque)
-    counts: Counter[str] = field(default_factory=Counter)
-
-    def record(self, event: IngestionFailureEvent) -> None:
-        self.counts[event.stage] += 1
-        if len(self.events) >= self.max_events:
-            self.events.popleft()
-        self.events.append(event)
-
-
-@dataclass
-class QueuePressureSample:
-    """Snapshot of queue pressure and worker count."""
-
-    timestamp_s: float
-    entry_depth_ratio: float
-    output_depth_ratio: float
-    worker_count: int
-    inflight_tasks: int
-
-
-@dataclass
-class LatencySample:
-    """Latency snapshot for decode and queue wait."""
-
-    timestamp_s: float
-    decode_s: float
-    queue_wait_s: float
-
-
-@dataclass
-class IngestionTelemetry:
-    """Telemetry samples for queue pressure, worker sizing, and latency."""
-
-    window: int = 256
-    samples: Deque[QueuePressureSample] = field(default_factory=deque)
-    latencies: Deque[LatencySample] = field(default_factory=deque)
-    worker_scale_ups: int = 0
-    worker_scale_downs: int = 0
-    queue_scale_ups: int = 0
-    queue_scale_downs: int = 0
-    forced_flushes: int = 0
-    circuit_breaker_opens: int = 0
-
-    def record_sample(self, sample: QueuePressureSample) -> None:
-        if len(self.samples) >= self.window:
-            self.samples.popleft()
-        self.samples.append(sample)
-
-    def record_latency(self, latency: LatencySample) -> None:
-        if len(self.latencies) >= self.window:
-            self.latencies.popleft()
-        self.latencies.append(latency)
+        if not 0 < self.supervisor_ema_alpha <= 1:
+            raise ValueError("supervisor_ema_alpha must be in (0, 1]")
 
 
 @dataclass
@@ -368,143 +153,6 @@ class IngestionPipelineStats:
         if self.started_at_s is None or self.finished_at_s is None:
             return None
         return self.finished_at_s - self.started_at_s
-
-
-class CircuitBreaker:
-    """Simple circuit breaker for decode stage isolation."""
-
-    def __init__(self, config: CircuitBreakerConfig) -> None:
-        self._config = config
-        self._lock = threading.Lock()
-        self._state: Literal["closed", "open", "half_open"] = "closed"
-        self._failure_count = 0
-        self._success_count = 0
-        self._opened_at_s: float | None = None
-
-    def allow(self) -> bool:
-        with self._lock:
-            if self._state == "closed":
-                return True
-            if self._state == "open":
-                if self._opened_at_s is None:
-                    return False
-                if (time.time() - self._opened_at_s) >= self._config.recovery_timeout_s:
-                    self._state = "half_open"
-                    self._success_count = 0
-                    return True
-                return False
-            return True
-
-    def record_success(self) -> None:
-        with self._lock:
-            if self._state == "half_open":
-                self._success_count += 1
-                if self._success_count >= self._config.half_open_successes:
-                    self._state = "closed"
-                    self._failure_count = 0
-                    self._success_count = 0
-
-    def record_failure(self) -> bool:
-        with self._lock:
-            self._failure_count += 1
-            if self._failure_count >= self._config.failure_threshold:
-                self._state = "open"
-                self._opened_at_s = time.time()
-                self._success_count = 0
-                return True
-            return False
-
-    @property
-    def state(self) -> str:
-        with self._lock:
-            return self._state
-
-
-class DeterministicReorderBuffer:
-    """Heap-backed ordering buffer that enforces deterministic output."""
-
-    def __init__(self, config: OrderingBufferConfig) -> None:
-        self._config = config
-        self._heap: list[tuple[int, int, DecodedFrame]] = []
-        self._forced_flushes = 0
-        self._counter = 0
-
-    def push(self, decoded: DecodedFrame) -> None:
-        import heapq
-
-        heapq.heappush(self._heap, (decoded.seq_id, self._counter, decoded))
-        self._counter += 1
-
-    def pop_ready(self, expected_seq: int) -> tuple[list[DecodedFrame], int]:
-        import heapq
-
-        ready: list[DecodedFrame] = []
-        while self._heap and self._heap[0][0] == expected_seq:
-            _, _, decoded = heapq.heappop(self._heap)
-            ready.append(decoded)
-            expected_seq += 1
-        if len(self._heap) >= self._config.max_pending:
-            forced = int(self._config.max_pending * self._config.forced_flush_ratio)
-            for _ in range(forced):
-                if not self._heap:
-                    break
-                _, _, decoded = heapq.heappop(self._heap)
-                ready.append(decoded)
-                expected_seq = max(expected_seq, decoded.seq_id + 1)
-                self._forced_flushes += 1
-        return ready, expected_seq
-
-    @property
-    def size(self) -> int:
-        return len(self._heap)
-
-    @property
-    def forced_flushes(self) -> int:
-        return self._forced_flushes
-
-
-class DynamicWorkerPool:
-    """Worker pool with dynamic scaling and accounting."""
-
-    def __init__(self, min_workers: int, max_workers: int) -> None:
-        if min_workers <= 0:
-            raise ValueError("min_workers must be positive")
-        if max_workers < min_workers:
-            raise ValueError("max_workers must be >= min_workers")
-        self._min_workers = min_workers
-        self._max_workers = max_workers
-        self._lock = threading.Lock()
-        self._active_workers = 0
-        self._total_spawned = 0
-
-    @property
-    def min_workers(self) -> int:
-        return self._min_workers
-
-    @property
-    def max_workers(self) -> int:
-        return self._max_workers
-
-    @property
-    def active_workers(self) -> int:
-        with self._lock:
-            return self._active_workers
-
-    @property
-    def total_spawned(self) -> int:
-        with self._lock:
-            return self._total_spawned
-
-    def register_spawn(self) -> int:
-        with self._lock:
-            self._active_workers += 1
-            self._total_spawned += 1
-            return self._total_spawned
-
-    def register_exit(self) -> None:
-        with self._lock:
-            if self._active_workers > 0:
-                self._active_workers -= 1
 
 
 class AsyncIngestionPipeline(Iterable[FramePacket]):
@@ -553,6 +201,21 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
         self._executor: concurrent.futures.Executor | None = None
         self._futures: dict[concurrent.futures.Future[np.ndarray | None], FrameSourceEntry] = {}
         self._futures_lock = threading.Lock()
+        self._supervisor = ControlPlaneSupervisor(
+            entry_queue=self._entry_queue,
+            output_queue=self._output_queue,
+            worker_pool=self._worker_pool,
+            entry_tuning=self._config.entry_queue_tuning,
+            output_tuning=self._config.output_queue_tuning,
+            worker_config=self._config.worker_pool,
+            telemetry=self._telemetry,
+            spawn_worker=self._spawn_worker,
+            retire_worker=self._request_worker_retire,
+            inflight_count=self._inflight_count,
+            stop_event=self._stop_event,
+            producer_done=self._producer_done,
+            ema_alpha=self._config.supervisor_ema_alpha,
+        )
 
     @property
     def stats(self) -> IngestionPipelineStats:
@@ -694,55 +357,13 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 return
             self._retire_requests += 1
         self._safe_put_entry(_WORKER_STOP)
-        self._telemetry.worker_scale_downs += 1
 
     def _run_supervisor(self) -> None:
         try:
-            while not self._stop_event.is_set():
-                time.sleep(self._config.worker_pool.supervisor_interval_s)
-                entry_ratio = self._entry_queue.depth_ratio
-                output_ratio = self._output_queue.depth_ratio
-                inflight = self._inflight_count
-                self._telemetry.record_sample(
-                    QueuePressureSample(
-                        timestamp_s=time.time(),
-                        entry_depth_ratio=entry_ratio,
-                        output_depth_ratio=output_ratio,
-                        worker_count=self._worker_pool.active_workers,
-                        inflight_tasks=inflight,
-                    )
-                )
-                self._tune_queue(self._entry_queue, self._config.entry_queue_tuning)
-                self._tune_queue(self._output_queue, self._config.output_queue_tuning)
-                if self._config.decode_executor == "thread":
-                    self._tune_workers(entry_ratio)
-                if self._producer_done.is_set() and self._entry_queue.size == 0:
-                    break
+            self._supervisor.run()
         except Exception as exc:  # pragma: no cover - supervisor failure
             self._error = exc
             LOGGER.exception("Ingestion supervisor failed")
-        finally:
-            LOGGER.info("Ingestion supervisor exiting")
-
-    def _tune_queue(self, queue: AdaptiveBoundedQueue[object], tuning: QueueTuningConfig) -> None:
-        depth_ratio = queue.depth_ratio
-        if depth_ratio >= tuning.scale_up_ratio and queue.capacity < tuning.max_capacity:
-            new_capacity = min(queue.capacity + tuning.scale_step, tuning.max_capacity)
-            queue.resize(new_capacity)
-            self._telemetry.queue_scale_ups += 1
-        elif depth_ratio <= tuning.scale_down_ratio and queue.capacity > tuning.min_capacity:
-            new_capacity = max(queue.capacity - tuning.scale_step, tuning.min_capacity)
-            queue.resize(new_capacity)
-            self._telemetry.queue_scale_downs += 1
-
-    def _tune_workers(self, entry_ratio: float) -> None:
-        pool_config = self._config.worker_pool
-        if entry_ratio >= pool_config.scale_up_ratio and self._worker_pool.active_workers < pool_config.max_workers:
-            self._spawn_worker()
-            self._telemetry.worker_scale_ups += 1
-            return
-        if entry_ratio <= pool_config.scale_down_ratio:
-            self._request_worker_retire()
 
     def _run_producer(self) -> None:
         try:
@@ -1014,7 +635,7 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
             seq_id=seq_id,
             stage=stage,
             error=error,
-            path=path,
+            path=str(path) if path else None,
         )
         self._failures.record(event)
         LOGGER.warning(
@@ -1033,7 +654,22 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
         with self._inflight_lock:
             self._inflight_tasks += delta
 
-    @property
     def _inflight_count(self) -> int:
         with self._inflight_lock:
             return self._inflight_tasks
+
+
+__all__ = [
+    "AsyncIngestionPipeline",
+    "IngestionPipelineConfig",
+    "IngestionPipelineStats",
+    "FrameSourceEntry",
+    "DecodedFrame",
+    "QueueTuningConfig",
+    "WorkerPoolConfig",
+    "RetryPolicyConfig",
+    "CircuitBreakerConfig",
+    "OrderingBufferConfig",
+    "BackpressureTimeout",
+    "IngestionClosed",
+]
