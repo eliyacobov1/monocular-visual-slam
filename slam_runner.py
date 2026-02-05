@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-import numpy as np
 
 from dataset_validation import validate_kitti
+from frame_stream import FrameStream, FrameStreamConfig
 from feature_pipeline import FeaturePipelineConfig
 from kitti_dataset import KittiSequence
 from robust_pose_estimator import RobustPoseEstimatorConfig
@@ -58,6 +58,8 @@ def run_kitti_sequence(
     config_path: Path,
     use_run_subdir: bool = True,
     max_frames: int | None = None,
+    stream_frames: bool = False,
+    stream_queue_capacity: int = 8,
 ) -> SLAMRunResult:
     validation = validate_kitti(root, sequence, camera=camera)
     if not validation.ok:
@@ -74,20 +76,12 @@ def run_kitti_sequence(
     if intrinsics is None:
         raise ValueError("Camera intrinsics not found for KITTI sequence")
 
-    frames: list[np.ndarray] = []
-    timestamps: list[float] = []
-    for entry in sequence_loader.iter_frames():
-        if max_frames is not None and len(frames) >= max_frames:
-            break
-        image = cv2.imread(str(entry.path), cv2.IMREAD_COLOR)
-        if image is None:
-            raise RuntimeError(f"Failed to read frame: {entry.path}")
-        frames.append(image)
-        timestamp = entry.timestamp if entry.timestamp is not None else float(entry.index)
-        timestamps.append(float(timestamp))
-
-    if not frames:
-        raise RuntimeError("No frames loaded from KITTI sequence")
+    frame_entries = [
+        (entry.index, entry.timestamp, entry.path)
+        for entry in sequence_loader.iter_frames()
+    ]
+    if not frame_entries:
+        raise RuntimeError("No frames found in KITTI sequence")
 
     slam_config = SLAMSystemConfig(
         run_id=run_id,
@@ -99,17 +93,53 @@ def run_kitti_sequence(
         pose_config=pose_config,
         use_run_subdir=use_run_subdir,
     )
+    num_frames = len(frame_entries)
+    if max_frames is not None:
+        num_frames = min(num_frames, max_frames)
     LOGGER.info(
         "Starting KITTI SLAM run",
         extra={
             "run_id": run_id,
             "sequence": sequence,
             "camera": camera,
-            "num_frames": len(frames),
+            "num_frames": num_frames,
         },
     )
     slam = SLAMSystem(slam_config)
-    result = slam.run_sequence(frames, timestamps)
+    if stream_frames:
+        stream = FrameStream(
+            frame_entries,
+            config=FrameStreamConfig(queue_capacity=stream_queue_capacity),
+            max_frames=max_frames,
+        )
+        result = slam.run_stream(stream)
+        LOGGER.info(
+            "Frame stream stats",
+            extra={
+                "enqueued": stream.stats.enqueued,
+                "dequeued": stream.stats.dequeued,
+                "dropped": stream.stats.dropped,
+                "read_failures": stream.stats.read_failures,
+                "max_depth": stream.stats.max_depth,
+                "duration_s": stream.stats.duration_s,
+                "total_read_s": stream.stats.total_read_s,
+            },
+        )
+    else:
+        frames: list[np.ndarray] = []
+        timestamps: list[float] = []
+        for index, timestamp, path in frame_entries:
+            if max_frames is not None and len(frames) >= max_frames:
+                break
+            image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if image is None:
+                raise RuntimeError(f"Failed to read frame: {path}")
+            frames.append(image)
+            timestamp_value = timestamp if timestamp is not None else float(index)
+            timestamps.append(float(timestamp_value))
+        if not frames:
+            raise RuntimeError("No frames loaded from KITTI sequence")
+        result = slam.run_sequence(frames, timestamps)
     LOGGER.info("Completed KITTI SLAM run", extra={"run_dir": str(result.run_dir)})
     return result
 
@@ -127,6 +157,17 @@ def _parse_args() -> argparse.Namespace:
         "--use_run_subdir",
         action="store_true",
         help="Write outputs into a run-specific subdirectory",
+    )
+    parser.add_argument(
+        "--stream_frames",
+        action="store_true",
+        help="Stream frames with a bounded background loader",
+    )
+    parser.add_argument(
+        "--stream_queue_capacity",
+        type=int,
+        default=8,
+        help="Frame stream queue capacity when streaming is enabled",
     )
     parser.add_argument(
         "--log_level",
@@ -152,6 +193,8 @@ def main() -> None:
         config_path=Path(args.config),
         use_run_subdir=args.use_run_subdir,
         max_frames=args.max_frames,
+        stream_frames=args.stream_frames,
+        stream_queue_capacity=args.stream_queue_capacity,
     )
 
 
