@@ -1,34 +1,34 @@
 # Tasks
 
 ## North-Star Engineering Milestones (Senior-Grade)
-1. **Async Ingestion Hardening + Backpressure Telemetry**
-   - Expand the async pipeline with adaptive queue sizing, dynamic worker
-     scaling, and drop/latency histogram reporting.
-   - Add per-sequence fault isolation with retry policies (skip vs. retry vs.
-     degrade) and structured failure summaries in run artifacts.
+1. **Async Ingestion Control Plane**
+   - Adaptive queues, dynamic worker scaling, and failure isolation with
+     structured telemetry summaries.
+   - CI gating for throughput/latency regressions plus per-sequence fault
+     recovery policies (skip, retry, degrade).
 
 2. **Graph-Optimization Re-Architecture**
-   - Modularize the pose-graph backend with pluggable solvers (SE(3)/Sim(3)) and
-     robust loss selection per constraint type.
-   - Add deterministic configuration snapshots and solver regression tests.
+   - Modular pose-graph backend with pluggable solvers (SE(3)/Sim(3)), robust
+     loss selection per constraint type, and deterministic config snapshots.
+   - Solver regression tests + reproducibility artifacts.
 
 3. **Calibration Drift Gates**
-   - Automate intrinsics/baseline drift checks in CI benchmark configs with
-     gating thresholds and report attachments.
-   - Persist calibration snapshots alongside trajectories for auditability.
+   - Automated intrinsics/baseline drift checks with gating thresholds and
+     persisted calibration snapshots.
+   - CI report attachments for auditability and diagnostics.
 
 4. **Relocalization Benchmark Pack**
-   - Multi-injection tracking-loss tests with confidence intervals and latency
-     regressions.
-   - Integrate recovery success metrics into the evaluation harness.
+   - Multi-injection tracking-loss tests with confidence intervals, latency
+     regressions, and recovery success metrics.
 
 5. **Telemetry Comparison CLI**
-   - Cross-run latency drift analysis with CSV export and regression gating.
-   - Add alerting thresholds for stage-level regressions (detect/match/pose).
+   - Cross-run latency drift analysis, CSV export, and regression gating for
+     stage-level metrics (detect/match/pose).
 
-## In-Progress Focus (Phase 1)
-- Promote the async ingestion pipeline to first-class evaluation tooling,
-  including throughput, queue health, and failure summaries in CI reports.
+## Active Focus (Phase 1)
+- Ship ingestion control-plane telemetry with adaptive queue tuning, dynamic
+  worker scaling, and failure summaries in evaluation artifacts.
 
-## Archived (Superseded)
-- Trivial task lists were removed in favor of milestone-based planning.
+## Backlog (High-Impact)
+- Multi-camera calibration ingestion + deterministic alignment tooling.
+- C++ hook scaffolding for latency-critical tracking or optimization stages.

@@ -1,19 +1,20 @@
 # Agent Instructions
 
 ## Project focus
-This repository is a Python-first monocular visual SLAM pipeline. The immediate
-focus is **accuracy-first robustness** on KITTI sequences, plus production-grade
-**asynchronous ingestion** with telemetry and failure isolation. The longer-term
-roadmap targets multi-camera + multi-sensor support (IMU/GPS) and **C++ hooks**
-for latency-critical components once Python baselines are validated.
+This repository is a Python-first monocular visual SLAM pipeline that must be
+**accuracy-first** on KITTI sequences while shipping a production-grade,
+**asynchronous ingestion control plane** with telemetry, failure isolation, and
+reproducible artifacts. The long-term roadmap still targets multi-camera and
+multi-sensor (IMU/GPS) expansion with **C++ hooks** for latency-critical
+components.
 
 ## Engineering priorities
 1. **Accuracy before speed**: improve pose estimation, loop closure, and
-   trajectory stability before micro-optimizations.
-2. **KITTI-centric tooling**: align datasets, calibrations, evaluation, and
-   benchmarks with KITTI expectations.
-3. **Resilient ingestion**: maintain asynchronous, failure-isolated pipelines
-   for long-run sequences with backpressure telemetry.
+   trajectory stability ahead of micro-optimizations.
+2. **Async ingestion control plane**: adaptive queues, dynamic worker scaling,
+   structured failure recovery, and explicit telemetry for long-run sequences.
+3. **KITTI-centric tooling**: keep datasets, calibrations, evaluation, and
+   benchmarks aligned with KITTI expectations.
 4. **Determinism**: fixed seeds, explicit configs, and reproducible artifacts.
 5. **Roadmap-ready interfaces**: design for multi-camera and multi-sensor
    expansion without breaking core APIs.
@@ -29,11 +30,13 @@ for latency-critical components once Python baselines are validated.
 - CI-ready benchmark harness for KITTI/TUM with ATE/RPE + diagnostics gating.
 - Regression thresholds for telemetry latency drift and calibration drift.
 - Reproducible demo scripts and persistent run artifacts.
-- Failure-isolated ingestion pipeline with backpressure metrics.
+- Failure-isolated ingestion pipeline with backpressure metrics and scale
+  summaries.
 
 ## Major technical milestones (Senior-level)
-- **Async ingestion hardening**: adaptive queue sizing, dynamic worker scaling,
-  structured failure recovery, and throughput/latency telemetry in CI reports.
+- **Async ingestion control plane**: adaptive queue sizing, dynamic worker
+  scaling, structured failure recovery, and throughput/latency telemetry in CI
+  reports.
 - **Graph-optimization re-architecture**: modular backend with pluggable
   solvers, robust losses, and deterministic config snapshots.
 - **Calibration drift gates**: automated baseline/intrinsics delta checks wired
