@@ -10,8 +10,11 @@ import numpy as np
 
 from ingestion_pipeline import (
     AsyncIngestionPipeline,
+    CircuitBreakerConfig,
     IngestionPipelineConfig,
+    OrderingBufferConfig,
     QueueTuningConfig,
+    RetryPolicyConfig,
     WorkerPoolConfig,
 )
 
@@ -37,6 +40,7 @@ def test_ingestion_pipeline_orders_frames() -> None:
             entry_queue_tuning=QueueTuningConfig(min_capacity=1, max_capacity=4, scale_step=1),
             output_queue_tuning=QueueTuningConfig(min_capacity=1, max_capacity=4, scale_step=1),
             worker_pool=WorkerPoolConfig(min_workers=2, max_workers=2, supervisor_interval_s=0.05),
+            ordering_buffer=OrderingBufferConfig(max_pending=10, forced_flush_ratio=0.5),
         ),
         read_fn=_read_fn,
     )
@@ -67,6 +71,7 @@ def test_ingestion_pipeline_handles_failures() -> None:
             entry_queue_tuning=QueueTuningConfig(min_capacity=1, max_capacity=4, scale_step=1),
             output_queue_tuning=QueueTuningConfig(min_capacity=1, max_capacity=4, scale_step=1),
             worker_pool=WorkerPoolConfig(min_workers=1, max_workers=1, supervisor_interval_s=0.05),
+            retry_policy=RetryPolicyConfig(max_attempts=1, backoff_s=0.0, jitter_s=0.0),
         ),
         read_fn=_read_fn,
     )
@@ -147,3 +152,29 @@ def test_ingestion_pipeline_stress_shutdown() -> None:
 
     assert results == list(range(120))
     assert pipeline.stats.decoded_frames == 120
+
+
+def test_ingestion_circuit_breaker_opens() -> None:
+    entries = _make_entries(6)
+
+    def _read_fn(_path: str, _backend: int) -> np.ndarray | None:
+        return None
+
+    pipeline = AsyncIngestionPipeline(
+        entries,
+        config=IngestionPipelineConfig(
+            entry_queue_capacity=2,
+            output_queue_capacity=2,
+            num_decode_workers=1,
+            fail_fast=False,
+            entry_queue_tuning=QueueTuningConfig(min_capacity=1, max_capacity=4, scale_step=1),
+            output_queue_tuning=QueueTuningConfig(min_capacity=1, max_capacity=4, scale_step=1),
+            retry_policy=RetryPolicyConfig(max_attempts=1, backoff_s=0.0, jitter_s=0.0),
+            circuit_breaker=CircuitBreakerConfig(failure_threshold=2, recovery_timeout_s=1.0, half_open_successes=1),
+        ),
+        read_fn=_read_fn,
+    )
+
+    list(pipeline)
+
+    assert pipeline.telemetry.circuit_breaker_opens >= 1

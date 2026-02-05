@@ -15,7 +15,12 @@ import cv2
 
 from dataset_validation import validate_kitti
 from frame_stream import FrameStream, FrameStreamConfig
-from ingestion_pipeline import AsyncIngestionPipeline, IngestionPipelineConfig
+from ingestion_pipeline import (
+    AsyncIngestionPipeline,
+    CircuitBreakerConfig,
+    IngestionPipelineConfig,
+    RetryPolicyConfig,
+)
 from feature_pipeline import FeaturePipelineConfig
 from kitti_dataset import KittiSequence
 from robust_pose_estimator import RobustPoseEstimatorConfig
@@ -68,6 +73,14 @@ def run_kitti_sequence(
     ingestion_read_timeout_s: float | None = 0.5,
     ingestion_decode_timeout_s: float | None = 0.5,
     ingestion_fail_fast: bool = True,
+    ingestion_decode_executor: str = "thread",
+    ingestion_inflight_limit: int = 8,
+    ingestion_retry_attempts: int = 2,
+    ingestion_retry_backoff_s: float = 0.02,
+    ingestion_retry_jitter_s: float = 0.01,
+    ingestion_breaker_threshold: int = 5,
+    ingestion_breaker_timeout_s: float = 1.0,
+    ingestion_breaker_half_open: int = 2,
 ) -> SLAMRunResult:
     if async_ingestion and stream_frames:
         raise ValueError("Select either stream_frames or async_ingestion, not both")
@@ -127,6 +140,18 @@ def run_kitti_sequence(
                 decode_timeout_s=ingestion_decode_timeout_s,
                 max_frames=max_frames,
                 fail_fast=ingestion_fail_fast,
+                decode_executor=ingestion_decode_executor,
+                inflight_limit=ingestion_inflight_limit,
+                retry_policy=RetryPolicyConfig(
+                    max_attempts=ingestion_retry_attempts,
+                    backoff_s=ingestion_retry_backoff_s,
+                    jitter_s=ingestion_retry_jitter_s,
+                ),
+                circuit_breaker=CircuitBreakerConfig(
+                    failure_threshold=ingestion_breaker_threshold,
+                    recovery_timeout_s=ingestion_breaker_timeout_s,
+                    half_open_successes=ingestion_breaker_half_open,
+                ),
             ),
         )
         result = slam.run_stream(ingestion)
@@ -139,11 +164,16 @@ def run_kitti_sequence(
                 "decoded_frames": ingestion.stats.decoded_frames,
                 "dropped_frames": ingestion.stats.dropped_frames,
                 "read_failures": ingestion.stats.read_failures,
+                "decode_exceptions": ingestion.stats.decode_exceptions,
+                "decode_retries": ingestion.stats.decode_retries,
                 "output_backpressure": ingestion.stats.output_backpressure,
+                "ordering_forced_flushes": ingestion.stats.ordering_forced_flushes,
                 "max_entry_queue_depth": ingestion.stats.max_entry_queue_depth,
                 "max_output_queue_depth": ingestion.stats.max_output_queue_depth,
                 "duration_s": ingestion.stats.duration_s,
                 "total_decode_s": ingestion.stats.total_decode_s,
+                "total_queue_wait_s": ingestion.stats.total_queue_wait_s,
+                "circuit_breaker_state": ingestion.telemetry.circuit_breaker_opens,
             },
         )
     elif stream_frames:
@@ -250,6 +280,54 @@ def _parse_args() -> argparse.Namespace:
         help="Fail fast on async ingestion decode or backpressure errors",
     )
     parser.add_argument(
+        "--ingestion_decode_executor",
+        default="thread",
+        choices=["thread", "process"],
+        help="Decode executor type for async ingestion",
+    )
+    parser.add_argument(
+        "--ingestion_inflight_limit",
+        type=int,
+        default=8,
+        help="Maximum number of inflight decode tasks",
+    )
+    parser.add_argument(
+        "--ingestion_retry_attempts",
+        type=int,
+        default=2,
+        help="Maximum decode retry attempts",
+    )
+    parser.add_argument(
+        "--ingestion_retry_backoff_s",
+        type=float,
+        default=0.02,
+        help="Decode retry backoff base (seconds)",
+    )
+    parser.add_argument(
+        "--ingestion_retry_jitter_s",
+        type=float,
+        default=0.01,
+        help="Decode retry jitter (seconds)",
+    )
+    parser.add_argument(
+        "--ingestion_breaker_threshold",
+        type=int,
+        default=5,
+        help="Circuit breaker failure threshold",
+    )
+    parser.add_argument(
+        "--ingestion_breaker_timeout_s",
+        type=float,
+        default=1.0,
+        help="Circuit breaker recovery timeout (seconds)",
+    )
+    parser.add_argument(
+        "--ingestion_breaker_half_open",
+        type=int,
+        default=2,
+        help="Circuit breaker half-open success count",
+    )
+    parser.add_argument(
         "--log_level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -282,6 +360,14 @@ def main() -> None:
         ingestion_read_timeout_s=args.ingestion_read_timeout_s,
         ingestion_decode_timeout_s=args.ingestion_decode_timeout_s,
         ingestion_fail_fast=args.ingestion_fail_fast,
+        ingestion_decode_executor=args.ingestion_decode_executor,
+        ingestion_inflight_limit=args.ingestion_inflight_limit,
+        ingestion_retry_attempts=args.ingestion_retry_attempts,
+        ingestion_retry_backoff_s=args.ingestion_retry_backoff_s,
+        ingestion_retry_jitter_s=args.ingestion_retry_jitter_s,
+        ingestion_breaker_threshold=args.ingestion_breaker_threshold,
+        ingestion_breaker_timeout_s=args.ingestion_breaker_timeout_s,
+        ingestion_breaker_half_open=args.ingestion_breaker_half_open,
     )
 
 
