@@ -15,6 +15,7 @@ import cv2
 
 from dataset_validation import validate_kitti
 from frame_stream import FrameStream, FrameStreamConfig
+from ingestion_pipeline import AsyncIngestionPipeline, IngestionPipelineConfig
 from feature_pipeline import FeaturePipelineConfig
 from kitti_dataset import KittiSequence
 from robust_pose_estimator import RobustPoseEstimatorConfig
@@ -60,7 +61,16 @@ def run_kitti_sequence(
     max_frames: int | None = None,
     stream_frames: bool = False,
     stream_queue_capacity: int = 8,
+    async_ingestion: bool = False,
+    ingestion_entry_capacity: int = 32,
+    ingestion_output_capacity: int = 16,
+    ingestion_decode_workers: int = 2,
+    ingestion_read_timeout_s: float | None = 0.5,
+    ingestion_decode_timeout_s: float | None = 0.5,
+    ingestion_fail_fast: bool = True,
 ) -> SLAMRunResult:
+    if async_ingestion and stream_frames:
+        raise ValueError("Select either stream_frames or async_ingestion, not both")
     validation = validate_kitti(root, sequence, camera=camera)
     if not validation.ok:
         messages = "; ".join(issue.message for issue in validation.issues)
@@ -106,7 +116,37 @@ def run_kitti_sequence(
         },
     )
     slam = SLAMSystem(slam_config)
-    if stream_frames:
+    if async_ingestion:
+        ingestion = AsyncIngestionPipeline(
+            frame_entries,
+            config=IngestionPipelineConfig(
+                entry_queue_capacity=ingestion_entry_capacity,
+                output_queue_capacity=ingestion_output_capacity,
+                num_decode_workers=ingestion_decode_workers,
+                read_timeout_s=ingestion_read_timeout_s,
+                decode_timeout_s=ingestion_decode_timeout_s,
+                max_frames=max_frames,
+                fail_fast=ingestion_fail_fast,
+            ),
+        )
+        result = slam.run_stream(ingestion)
+        LOGGER.info(
+            "Async ingestion stats",
+            extra={
+                "enqueued_entries": ingestion.stats.enqueued_entries,
+                "dequeued_entries": ingestion.stats.dequeued_entries,
+                "dropped_entries": ingestion.stats.dropped_entries,
+                "decoded_frames": ingestion.stats.decoded_frames,
+                "dropped_frames": ingestion.stats.dropped_frames,
+                "read_failures": ingestion.stats.read_failures,
+                "output_backpressure": ingestion.stats.output_backpressure,
+                "max_entry_queue_depth": ingestion.stats.max_entry_queue_depth,
+                "max_output_queue_depth": ingestion.stats.max_output_queue_depth,
+                "duration_s": ingestion.stats.duration_s,
+                "total_decode_s": ingestion.stats.total_decode_s,
+            },
+        )
+    elif stream_frames:
         stream = FrameStream(
             frame_entries,
             config=FrameStreamConfig(queue_capacity=stream_queue_capacity),
@@ -170,6 +210,46 @@ def _parse_args() -> argparse.Namespace:
         help="Frame stream queue capacity when streaming is enabled",
     )
     parser.add_argument(
+        "--async_ingestion",
+        action="store_true",
+        help="Enable async ingestion with decode workers",
+    )
+    parser.add_argument(
+        "--ingestion_entry_capacity",
+        type=int,
+        default=32,
+        help="Async ingestion entry queue capacity",
+    )
+    parser.add_argument(
+        "--ingestion_output_capacity",
+        type=int,
+        default=16,
+        help="Async ingestion output queue capacity",
+    )
+    parser.add_argument(
+        "--ingestion_decode_workers",
+        type=int,
+        default=2,
+        help="Number of async ingestion decode workers",
+    )
+    parser.add_argument(
+        "--ingestion_read_timeout_s",
+        type=float,
+        default=0.5,
+        help="Timeout for async ingestion entry queue operations",
+    )
+    parser.add_argument(
+        "--ingestion_decode_timeout_s",
+        type=float,
+        default=0.5,
+        help="Timeout for async ingestion output queue operations",
+    )
+    parser.add_argument(
+        "--ingestion_fail_fast",
+        action="store_true",
+        help="Fail fast on async ingestion decode or backpressure errors",
+    )
+    parser.add_argument(
         "--log_level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -195,6 +275,13 @@ def main() -> None:
         max_frames=args.max_frames,
         stream_frames=args.stream_frames,
         stream_queue_capacity=args.stream_queue_capacity,
+        async_ingestion=args.async_ingestion,
+        ingestion_entry_capacity=args.ingestion_entry_capacity,
+        ingestion_output_capacity=args.ingestion_output_capacity,
+        ingestion_decode_workers=args.ingestion_decode_workers,
+        ingestion_read_timeout_s=args.ingestion_read_timeout_s,
+        ingestion_decode_timeout_s=args.ingestion_decode_timeout_s,
+        ingestion_fail_fast=args.ingestion_fail_fast,
     )
 
 

@@ -30,6 +30,8 @@ pose-graph optimization.
   dashboard.
 - **Streaming frame ingestion** with bounded buffering for large sequences,
   enabling overlap between IO and compute stages.
+- **Asynchronous ingestion pipeline** with multi-stage decode workers and
+  backpressure metrics for long KITTI runs.
 
 ## System Architecture
 
@@ -141,6 +143,12 @@ Benchmark streaming ingestion throughput + memory delta:
 
 ```bash
 python benchmark_frame_stream.py --frames 500 --queue_capacity 8
+```
+
+Benchmark async ingestion throughput + memory delta:
+
+```bash
+python benchmark_async_ingestion.py --frames 500 --workers 2 --queue 32
 ```
 
 The CI runner aggregates regression gate results, computes a severity score
@@ -395,6 +403,23 @@ python slam_runner.py \
   --output_dir reports \
   --run_id kitti_00_slam \
   --use_run_subdir
+```
+
+Enable the asynchronous ingestion pipeline with decode workers:
+
+```bash
+python slam_runner.py \
+  --root /path/to/kitti \
+  --sequence 00 \
+  --camera image_2 \
+  --config configs/slam_pipeline.json \
+  --output_dir reports \
+  --run_id kitti_00_async \
+  --use_run_subdir \
+  --async_ingestion \
+  --ingestion_decode_workers 2 \
+  --ingestion_entry_capacity 32 \
+  --ingestion_output_capacity 16
 ```
 
 Pipeline configuration file schema:
