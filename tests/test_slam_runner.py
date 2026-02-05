@@ -95,3 +95,31 @@ def test_run_kitti_sequence_streaming(tmp_path: Path) -> None:
     assert result.trajectory_path.exists()
     assert result.metrics_path.exists()
     assert result.diagnostics_path.exists()
+
+
+def test_run_kitti_sequence_async_ingestion(tmp_path: Path) -> None:
+    _write_dummy_kitti_dataset(tmp_path)
+    config_path = tmp_path / "pipeline.json"
+    config_path.write_text(json.dumps({}), encoding="utf-8")
+
+    result = run_kitti_sequence(
+        root=tmp_path,
+        sequence="00",
+        camera="image_2",
+        output_dir=tmp_path / "reports",
+        run_id="kitti_async_test",
+        config_path=config_path,
+        use_run_subdir=False,
+        max_frames=2,
+        async_ingestion=True,
+        ingestion_entry_capacity=1,
+        ingestion_output_capacity=1,
+        ingestion_decode_workers=1,
+        ingestion_read_timeout_s=0.2,
+        ingestion_decode_timeout_s=0.2,
+        ingestion_fail_fast=True,
+    )
+
+    assert result.trajectory_path.exists()
+    assert result.metrics_path.exists()
+    assert result.diagnostics_path.exists()
