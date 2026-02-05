@@ -22,6 +22,8 @@ pose-graph optimization.
   from keyframes in the SLAM API).
 - **Pose-graph optimization** in SE(3), with optional **Sim(3)** loop correction
   to mitigate scale drift in monocular runs.
+- **Pluggable graph-optimization solvers** with deterministic snapshots and
+  robust-loss selection for regression gating.
 - **Evaluation harness** for ATE/RPE on KITTI and TUM, plus dataset validation
   helpers.
 - **Multi-camera calibration rig** parsing with baseline validation and
@@ -69,8 +71,9 @@ pose-graph optimization.
   outlier rejection.
 - **Triangulation** and **reprojection error** minimization in local bundle
   adjustment.
-- **Optimization backend**: SciPy `least_squares` (Huber / soft_l1 losses) for
-  bundle adjustment and pose-graph refinement.
+- **Optimization backend**: pluggable solver registry with SciPy
+  `least_squares` and sparse Gauss-Newton solvers, plus configurable robust
+  losses for pose-graph refinement.
 
 ## Tech Stack
 
@@ -157,6 +160,12 @@ Benchmark async ingestion throughput + memory delta:
 
 ```bash
 python benchmark_async_ingestion.py --frames 500 --workers 2 --queue 32
+```
+
+Benchmark pose-graph optimization throughput + memory delta:
+
+```bash
+python benchmark_graph_optimization.py --nodes 200 --edges 400 --solver scipy
 ```
 
 Benchmark async ingestion control plane with executor selection:

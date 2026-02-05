@@ -2,19 +2,21 @@
 
 ## Mission
 Deliver a production-grade monocular visual SLAM system with an **accuracy-first
-pipeline** on KITTI, backed by a **robust asynchronous ingestion control
-plane**, deterministic artifacts, and telemetry suitable for CI regression
+pipeline** on KITTI, backed by deterministic optimization artifacts, a robust
+asynchronous ingestion control plane, and telemetry suitable for CI regression
 analysis.
 
 ## Engineering priorities
 1. **Accuracy over speed**: prioritize pose estimation, loop closure, and
    trajectory stability improvements ahead of micro-optimizations.
-2. **Async control plane mastery**: stage supervisors, circuit breakers,
+2. **Graph-optimization modularity**: maintain pluggable solver interfaces,
+   robust-loss selection, and deterministic solver snapshots for regression
+   gating.
+3. **Async control-plane mastery**: stage supervisors, circuit breakers,
    deterministic ordering buffers, and structured telemetry with backpressure
    visibility.
-3. **KITTI-centric tooling**: preserve KITTI dataset expectations, calibration
-   formats, and evaluation metrics.
-4. **Determinism**: fixed seeds, explicit configs, and reproducible artifacts.
+4. **Determinism**: fixed seeds, explicit configs, and reproducible artifacts
+   for every benchmark and solver run.
 5. **Roadmap-ready interfaces**: maintain APIs that can expand to multi-camera
    and multi-sensor (IMU/GPS) usage, with C++ hooks for latency-critical
    modules.
@@ -36,11 +38,11 @@ analysis.
   summaries.
 
 ## Senior-level milestones
+- **Graph-optimization modularity**: pluggable solvers, robust-loss selection,
+  deterministic solver snapshots, and accuracy regression gates.
 - **Control-plane orchestration**: stage-level supervisors, circuit breakers,
   deterministic ordering buffers, and structured latency telemetry wired into
   CI outputs.
-- **Graph-optimization modularity**: pluggable solvers, robust-loss selection,
-  and deterministic solver snapshots with regression gates on accuracy.
 - **Calibration drift automation**: baseline/intrinsics deltas gated in CI with
   artifact retention and visual diagnostics.
 - **Relocalization resilience**: multi-injection benchmark pack with
