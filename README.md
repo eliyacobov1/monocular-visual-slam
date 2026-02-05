@@ -30,8 +30,8 @@ pose-graph optimization.
   dashboard.
 - **Streaming frame ingestion** with bounded buffering for large sequences,
   enabling overlap between IO and compute stages.
-- **Async ingestion control plane** with adaptive queues, dynamic worker
-  scaling, deterministic ordering buffers, retry/backoff policies, and
+- **Async ingestion control plane** with EMA-smoothed adaptive queues, dynamic
+  worker scaling, deterministic ordering buffers, retry/backoff policies, and
   circuit-breaker isolation for long KITTI runs.
 
 ## System Architecture
@@ -55,8 +55,9 @@ pose-graph optimization.
    - BoW candidate retrieval plus geometric verification for relocalization.
 
 5. **Async Ingestion Control Plane**
-   - Adaptive queues + deterministic reorder buffers with telemetry snapshots
-     (`ingestion_pipeline.py`).
+   - EMA-smoothed adaptive queues + deterministic reorder buffers with
+     telemetry snapshots (`ingestion_pipeline.py`,
+     `ingestion_control_plane.py`).
    - Circuit-breaker isolation + retry/backoff to protect long KITTI runs.
    - Optional process-backed decode executor for failure isolation.
 
@@ -162,6 +163,12 @@ Benchmark async ingestion control plane with executor selection:
 
 ```bash
 python benchmark_ingestion_control_plane.py --frames 500 --executor thread
+```
+
+Benchmark control-plane supervisor scaling and memory delta:
+
+```bash
+python benchmark_control_plane_supervisor.py
 ```
 
 The CI runner aggregates regression gate results, computes a severity score
