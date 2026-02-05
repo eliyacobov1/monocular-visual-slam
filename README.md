@@ -28,6 +28,8 @@ pose-graph optimization.
   diagnostics for KITTI stereo setups.
 - **Visualization** through Matplotlib live plots and an optional Next.js
   dashboard.
+- **Streaming frame ingestion** with bounded buffering for large sequences,
+  enabling overlap between IO and compute stages.
 
 ## System Architecture
 
@@ -133,6 +135,12 @@ Run the CI benchmark suite (includes baseline regression checks and severity sco
 
 ```bash
 python benchmark_ci_runner.py --config configs/evaluation/ci_benchmark.json
+```
+
+Benchmark streaming ingestion throughput + memory delta:
+
+```bash
+python benchmark_frame_stream.py --frames 500 --queue_capacity 8
 ```
 
 The CI runner aggregates regression gate results, computes a severity score

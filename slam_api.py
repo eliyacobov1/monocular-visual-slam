@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 
 import cv2
 import numpy as np
@@ -29,8 +29,17 @@ from run_telemetry import RunTelemetryRecorder, TelemetryEvent, TelemetrySink, t
 from keyframe_manager import KeyframeManager
 from map_builder import MapBuilderConfig, MapBuildStats, MapSnapshotBuilder
 from persistent_map import MapRelocalizer, PersistentMapSnapshot, PersistentMapStore
+from frame_stream import FramePacket
 
 LOGGER = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class FrameLike(Protocol):
+    """Protocol describing a frame payload with timestamp."""
+
+    frame: np.ndarray
+    timestamp: float
 
 
 @dataclass(frozen=True)
@@ -239,6 +248,24 @@ class SLAMSystem:
 
     def run_sequence(self, frames: Iterable[np.ndarray], timestamps: Iterable[float]) -> SLAMRunResult:
         for frame, timestamp in zip(frames, timestamps):
+            self.process_frame(frame, float(timestamp))
+        return self.finalize_run()
+
+    def run_stream(self, frames: Iterable[FrameLike | tuple[np.ndarray, float]]) -> SLAMRunResult:
+        """Process a stream of frames with timestamps.
+
+        Accepts an iterable of (frame, timestamp) tuples or objects exposing
+        ``frame`` and ``timestamp`` attributes (e.g., FramePacket).
+        """
+
+        for item in frames:
+            if isinstance(item, tuple):
+                frame, timestamp = item
+            elif isinstance(item, FramePacket):
+                frame, timestamp = item.frame, item.timestamp
+            else:
+                frame = item.frame
+                timestamp = item.timestamp
             self.process_frame(frame, float(timestamp))
         return self.finalize_run()
 

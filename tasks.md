@@ -1,81 +1,37 @@
 # Tasks
 
-## Deep Sprint: Three-Pillar Plan
-1. **Persistence Layer**: Add a run-centric data persistence layer for
-   trajectories, metrics, and map snapshots with structured metadata.
-2. **SLAM API Wrapper**: Introduce a high-level API that orchestrates the
-   pipeline, manages configuration, and persists outputs through the data
-   layer.
-3. **Robust Pose Suite**: Ship a multi-model pose estimation suite (essential +
-   homography) with model selection and diagnostics for accuracy gains.
+## North-Star Engineering Milestones (Senior-Grade)
+1. **Asynchronous Ingestion + Failure Isolation**
+   - Build a multi-stage ingest pipeline (IO → decode → tracking) with bounded
+     queues, backpressure metrics, and fault isolation per sequence.
+   - Add structured failure reporting with recovery policies (skip, retry,
+     fallback) and telemetry for dropped/late frames.
 
-## Current Focus
-- Build the persistence layer with reproducible run artifacts and metrics.
-- Wire the SLAM API wrapper to run sequences and save trajectories + metrics.
-- Integrate the robust pose estimator into the API and diagnostics pipeline.
+2. **Calibration Drift Regression Gates**
+   - Introduce automated calibration drift checks (baseline + intrinsics deltas)
+     in CI benchmark configs with pass/fail thresholds.
+   - Persist calibration reports alongside trajectory metrics for auditability.
 
-## Next Steps
-- Expand regression gate configs for KITTI/TUM smoke sequences and wire into CI.
-- Add evaluation harness hooks that ingest data-layer artifacts for reporting.
+3. **High-Fidelity Optimization Back-End**
+   - Introduce a modular graph-optimization layer with pluggable solvers
+     (SE(3) + Sim(3)) and robust loss selection per constraint type.
+   - Provide a correctness-first optimization suite with deterministic seeding.
 
-## Completed
-- ✅ **SLAM API Wrapper**: Added telemetry instrumentation with persisted
-  timing artifacts and flush-on-finalize behavior for reproducible runs.
-- ✅ **Telemetry Aggregation**: Added per-stage timing summaries in the
-  evaluation harness with aggregate and per-sequence telemetry reporting.
-- ✅ **Robust Pose Diagnostics Integration**: Wired frame diagnostics summaries
-  into the evaluation harness so per-sequence reports include inlier/parallax
-  statistics and model-selection metrics from SLAM runs.
+4. **Relocalization Benchmark Pack**
+   - Expand relocalization evaluation with multiple tracking-loss injections
+     per sequence, statistical confidence intervals, and latency regressions.
 
-## Follow-up Tasks
-- Introduce configurable telemetry sampling/decimation for long KITTI
-  sequences to reduce disk footprint while preserving trend data.
-- Extend telemetry sinks to support JSONL streaming and pluggable backends
-  (e.g., Prometheus export) for large-scale experiments.
-- Add regression gate thresholds for telemetry latency regressions alongside
-  ATE/RPE baselines.
-- Build a telemetry-to-report transformer that merges timing summaries with
-  per-sequence error diagnostics for richer evaluation artifacts.
-- Add a CLI to compare telemetry summaries across runs and export CSV
-  dashboards for experiment tracking.
-- Add a diagnostics trend report that correlates per-frame inlier ratios with
-  ATE/RPE drift to flag degraded pose quality.
-- Introduce a histogram-based diagnostics export (JSON + CSV) for per-method
-  inlier distributions to support richer regression analysis.
-- Extend evaluation configs to optionally enforce diagnostics-based regression
-  thresholds alongside ATE/RPE gates.
+5. **Telemetry-First Performance Profiling**
+   - Provide a dedicated telemetry comparison CLI to detect latency drift across
+     runs, export CSV dashboards, and enforce regression thresholds.
 
-## Technical Debt Log
-- Telemetry aggregation currently loads full event payloads into memory; add a
-  streaming summarizer to handle very long runs without memory pressure.
-- Diagnostics summarization currently assumes full-frame diagnostics are loaded
-  into memory; migrate to a streaming summarizer for very long runs.
+## Implementation Roadmap (Near-Term)
+- Integrate streaming frame ingestion into the SLAM runner and expose queue
+  capacity + telemetry in the evaluation harness.
+- Add benchmark scripts to measure throughput and memory deltas for streaming
+  ingestion.
+- Extend the evaluation harness to surface ingestion drop rates and latency
+  distributions.
 
-## Project Status (Interview Readiness)
-**Status**: Partial (improving). Relocalization recovery metrics (success rate +
-latency) are now regression-gated alongside ATE/RPE and telemetry baselines,
-leaving calibration drift validation and long-run ingestion isolation as the
-primary readiness gaps.
-
-## Minimal Gaps Checklist
-- ✅ Robust per-frame failure boundaries with explicit diagnostics metadata.
-- ✅ Streaming diagnostics + telemetry summarizers for long KITTI runs.
-- ✅ Regression gate thresholds for diagnostics metrics alongside ATE/RPE.
-- ✅ Telemetry latency regression thresholds alongside ATE/RPE baselines.
-- ✅ CI-ready benchmark harness wiring for performance regression detection.
-- ✅ Persistent map + relocalization pipeline wiring (snapshot build + recovery hooks).
-- ✅ Multi-camera rig abstraction + calibration validation for stereo/multi-view datasets.
-- ✅ Multi-camera ingestion + synchronization pipeline for stereo/multi-view datasets.
-- ✅ End-to-end relocalization demo sequence with tracking-loss recovery.
-- ⏳ Calibration drift regression checks (baseline/intrinsics) wired into CI gate configs.
-- ⏳ Asynchronous ingestion + failure isolation for long-running multi-sequence runs.
-
-## Follow-up Tasks (Post-Implementation)
-- Extend the relocalization demo to optionally load a persisted map snapshot
-  and compare recovery performance across runs.
-- Add calibration drift regression gates (baseline + intrinsics deltas) into
-  KITTI CI benchmark configs.
-- Add a relocalization benchmark pack that aggregates success/latency across
-  multiple tracking-loss injections per sequence for higher statistical power.
-- Introduce confidence-interval reporting for relocalization latency deltas to
-  reduce sensitivity to single-run variance.
+## Archived (Superseded)
+- Trivial task lists were removed in favor of milestone-based planning.

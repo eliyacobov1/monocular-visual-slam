@@ -72,3 +72,26 @@ def test_run_kitti_sequence_generates_artifacts(tmp_path: Path) -> None:
     assert result.trajectory_path.exists()
     assert result.metrics_path.exists()
     assert result.diagnostics_path.exists()
+
+
+def test_run_kitti_sequence_streaming(tmp_path: Path) -> None:
+    _write_dummy_kitti_dataset(tmp_path)
+    config_path = tmp_path / "pipeline.json"
+    config_path.write_text(json.dumps({}), encoding="utf-8")
+
+    result = run_kitti_sequence(
+        root=tmp_path,
+        sequence="00",
+        camera="image_2",
+        output_dir=tmp_path / "reports",
+        run_id="kitti_stream_test",
+        config_path=config_path,
+        use_run_subdir=False,
+        max_frames=2,
+        stream_frames=True,
+        stream_queue_capacity=1,
+    )
+
+    assert result.trajectory_path.exists()
+    assert result.metrics_path.exists()
+    assert result.diagnostics_path.exists()
