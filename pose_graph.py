@@ -9,8 +9,14 @@ from typing import Iterable, List
 import cv2
 import numpy as np
 
+from factor_graph import (
+    FactorGraph,
+    FactorGraphConfig,
+    SE2BetweenFactor,
+    SE3BetweenFactor,
+    Sim3BetweenFactor,
+)
 from graph_optimization import (
-    LinearizedResidual,
     PoseGraphProblem,
     PoseGraphSnapshot,
     RobustLossConfig,
@@ -92,20 +98,20 @@ class _BasePoseGraph:
     def _wrap_angle(self, angle: float) -> float:
         return float((angle + np.pi) % (2 * np.pi) - np.pi)
 
-    def _finite_difference_jacobian(
+    def _pose_to_vec(self, pose: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def _vec_to_pose(self, vec: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def _build_problem(
         self,
-        residual_fn: callable,
-        vec: np.ndarray,
-        epsilon: float = 1e-6,
-    ) -> np.ndarray:
-        base = residual_fn(vec)
-        jac = np.zeros((base.size, vec.size), dtype=float)
-        for idx in range(vec.size):
-            perturbed = vec.copy()
-            perturbed[idx] += epsilon
-            diff = residual_fn(perturbed) - base
-            jac[:, idx] = diff / epsilon
-        return jac
+        graph: FactorGraph,
+        snapshot: PoseGraphSnapshot,
+    ) -> tuple[PoseGraphProblem, np.ndarray, list[int]]:
+        problem, x0 = graph.build_problem(snapshot)
+        ordered_ids = graph.ordered_variable_ids()
+        return problem, x0, ordered_ids
 
 
 class PoseGraph(_BasePoseGraph):
@@ -115,10 +121,12 @@ class PoseGraph(_BasePoseGraph):
         solver_name: str = "scipy",
         solver_config: SolverConfig | None = None,
         loss_config: RobustLossConfig | None = None,
+        numeric_epsilon: float = 1e-6,
     ) -> None:
         super().__init__(solver_name=solver_name, solver_config=solver_config, loss_config=loss_config)
         self.poses: List[np.ndarray] = [np.eye(3)]
         self.edges: List[Edge] = []
+        self._numeric_epsilon = numeric_epsilon
 
     def add_pose(self, R: np.ndarray, t: np.ndarray) -> int:
         pose_delta = np.eye(3)
@@ -147,93 +155,22 @@ class PoseGraph(_BasePoseGraph):
         T[:2, 2] = [tx, ty]
         return T
 
-    def _edge_residual(self, pose_i: np.ndarray, pose_j: np.ndarray, edge: Edge) -> np.ndarray:
-        Tij = np.linalg.inv(pose_i) @ pose_j
-        dx, dy = Tij[:2, 2]
-        dtheta = np.arctan2(Tij[1, 0], Tij[0, 0])
+    def _edge_measurement(self, edge: Edge) -> np.ndarray:
         meas_theta = np.arctan2(edge.R[1, 0], edge.R[0, 0])
-        err = np.array([
-            dx - edge.t[0],
-            dy - edge.t[1],
-            self._wrap_angle(dtheta - meas_theta),
-        ])
-        return err
+        return np.array([edge.t[0], edge.t[1], meas_theta], dtype=float)
 
-    def _pack_variables(self) -> np.ndarray:
-        if len(self.poses) <= 1:
-            return np.empty(0)
-        return np.concatenate([self._pose_to_vec(pose) for pose in self.poses[1:]])
-
-    def _pose_from_vector(self, x: np.ndarray, idx: int) -> np.ndarray:
-        if idx == 0:
-            return self.poses[0]
-        offset = (idx - 1) * 3
-        return self._vec_to_pose(x[offset : offset + 3])
-
-    def _linearize_edges(self, x: np.ndarray) -> Iterable:
+    def _build_factor_graph(self) -> FactorGraph:
+        config = FactorGraphConfig(state_dim=3, anchor_ids=(0,), numeric_epsilon=self._numeric_epsilon)
+        graph = FactorGraph(config)
+        for idx, pose in enumerate(self.poses):
+            graph.add_variable(idx, self._pose_to_vec(pose))
         for edge in self.edges:
-            anchor_i = edge.i == 0
-            anchor_j = edge.j == 0
-            if edge.i == 0:
-                pose_i = self.poses[0]
-                vec_i = self._pose_to_vec(pose_i)
-            else:
-                offset_i = (edge.i - 1) * 3
-                vec_i = x[offset_i : offset_i + 3]
-                pose_i = self._vec_to_pose(vec_i)
-            if edge.j == 0:
-                pose_j = self.poses[0]
-                vec_j = self._pose_to_vec(pose_j)
-            else:
-                offset_j = (edge.j - 1) * 3
-                vec_j = x[offset_j : offset_j + 3]
-                pose_j = self._vec_to_pose(vec_j)
-
-            residual = self._edge_residual(pose_i, pose_j, edge)
-
-            def residual_i(vec: np.ndarray) -> np.ndarray:
-                return self._edge_residual(self._vec_to_pose(vec), pose_j, edge)
-
-            def residual_j(vec: np.ndarray) -> np.ndarray:
-                return self._edge_residual(pose_i, self._vec_to_pose(vec), edge)
-
-            jac_i = self._finite_difference_jacobian(residual_i, vec_i)
-            jac_j = self._finite_difference_jacobian(residual_j, vec_j)
-            if anchor_i and not anchor_j:
-                zeros = np.zeros_like(jac_j)
-                yield (edge.j - 1, edge.j - 1, residual, jac_j, zeros, edge.weight)
-            elif anchor_j and not anchor_i:
-                zeros = np.zeros_like(jac_i)
-                yield (edge.i - 1, edge.i - 1, residual, jac_i, zeros, edge.weight)
-            elif not anchor_i and not anchor_j:
-                yield (edge.i - 1, edge.j - 1, residual, jac_i, jac_j, edge.weight)
+            measurement = self._edge_measurement(edge)
+            graph.add_factor(SE2BetweenFactor(edge.i, edge.j, measurement, weight=edge.weight))
+        return graph
 
     def optimize(self) -> List[np.ndarray]:
-        x0 = self._pack_variables()
-        if x0.size == 0:
-            return self.poses
-
-        def residuals(x: np.ndarray) -> np.ndarray:
-            res = []
-            for edge in self.edges:
-                pose_i = self._pose_from_vector(x, edge.i)
-                pose_j = self._pose_from_vector(x, edge.j)
-                res.append(self._edge_residual(pose_i, pose_j, edge) * edge.weight)
-            return np.concatenate(res) if res else np.empty(0)
-
-        def linearize(x: np.ndarray) -> Iterable:
-            for i, j, residual, jac_i, jac_j, weight in self._linearize_edges(x):
-                if i < 0 or j < 0:
-                    continue
-                yield LinearizedResidual(
-                    i=i,
-                    j=j,
-                    residual=residual,
-                    jacobian_i=jac_i,
-                    jacobian_j=jac_j,
-                    weight=weight,
-                )
-
+        graph = self._build_factor_graph()
         edges_payload = [
             {
                 "i": edge.i,
@@ -245,27 +182,31 @@ class PoseGraph(_BasePoseGraph):
             for edge in self.edges
         ]
         snapshot = PoseGraphSnapshot(
-            version=1,
+            version=2,
             solver_name=self._solver_name,
             loss_config=self._loss_config,
             solver_config=self._solver_config,
             poses=[pose.tolist() for pose in self.poses],
             edges=edges_payload,
-            metadata={"graph_type": "SE2"},
+            metadata={
+                "graph_type": "SE2",
+                "factor_graph": True,
+                "numeric_epsilon": self._numeric_epsilon,
+            },
         )
-        problem = PoseGraphProblem(
-            residual_fn=residuals,
-            linearize_fn=linearize,
-            parameter_size=x0.size,
-            block_size=3,
-            snapshot=snapshot,
-        )
+        problem, x0, ordered_ids = self._build_problem(graph, snapshot)
+        if x0.size == 0:
+            return self.poses
         x_opt, result = self._solver.solve(problem, x0, self._solver_config, self._loss_config)
         optimized = [self.poses[0]]
-        if x_opt.size:
-            optimized.extend(
-                [self._vec_to_pose(x_opt[i : i + 3]) for i in range(0, x_opt.size, 3)]
-            )
+        for index, var_id in enumerate(ordered_ids):
+            offset = index * 3
+            pose_vec = x_opt[offset : offset + 3]
+            pose = self._vec_to_pose(pose_vec)
+            if var_id < len(self.poses):
+                optimized.append(pose)
+            else:
+                optimized.append(pose)
         self._last_result = result
         self._last_snapshot = snapshot
         logger.info("Pose graph optimisation success: %s", result.success)
@@ -279,10 +220,12 @@ class PoseGraph3D(_BasePoseGraph):
         solver_name: str = "scipy",
         solver_config: SolverConfig | None = None,
         loss_config: RobustLossConfig | None = None,
+        numeric_epsilon: float = 1e-6,
     ) -> None:
         super().__init__(solver_name=solver_name, solver_config=solver_config, loss_config=loss_config)
         self.poses: List[np.ndarray] = [np.eye(4)]
         self.edges: List[Edge3D] = []
+        self._numeric_epsilon = numeric_epsilon
 
     def add_pose(self, R: np.ndarray, t: np.ndarray) -> int:
         pose_delta = np.eye(4)
@@ -312,77 +255,26 @@ class PoseGraph3D(_BasePoseGraph):
         T[:3, 3] = tvec
         return T
 
-    def _edge_residual(self, pose_i: np.ndarray, pose_j: np.ndarray, edge: Edge3D) -> np.ndarray:
-        Tij = np.linalg.inv(pose_i) @ pose_j
-        Ri = Tij[:3, :3]
-        ti = Tij[:3, 3]
-        R_err = edge.R.T @ Ri
-        rvec_err, _ = cv2.Rodrigues(R_err)
-        t_err = ti - edge.t
-        return np.hstack([rvec_err.ravel(), t_err.ravel()])
-
-    def _pack_variables(self) -> np.ndarray:
-        if len(self.poses) <= 1:
-            return np.empty(0)
-        return np.concatenate([self._pose_to_vec(pose) for pose in self.poses[1:]])
-
-    def _pose_from_vector(self, x: np.ndarray, idx: int) -> np.ndarray:
-        if idx == 0:
-            return self.poses[0]
-        offset = (idx - 1) * 6
-        return self._vec_to_pose(x[offset : offset + 6])
-
-    def _linearize_edges(self, x: np.ndarray) -> Iterable:
+    def _build_factor_graph(self) -> FactorGraph:
+        config = FactorGraphConfig(state_dim=6, anchor_ids=(0,), numeric_epsilon=self._numeric_epsilon)
+        graph = FactorGraph(config)
+        for idx, pose in enumerate(self.poses):
+            graph.add_variable(idx, self._pose_to_vec(pose))
         for edge in self.edges:
-            anchor_i = edge.i == 0
-            anchor_j = edge.j == 0
-            if edge.i == 0:
-                pose_i = self.poses[0]
-                vec_i = self._pose_to_vec(pose_i)
-            else:
-                offset_i = (edge.i - 1) * 6
-                vec_i = x[offset_i : offset_i + 6]
-                pose_i = self._vec_to_pose(vec_i)
-            if edge.j == 0:
-                pose_j = self.poses[0]
-                vec_j = self._pose_to_vec(pose_j)
-            else:
-                offset_j = (edge.j - 1) * 6
-                vec_j = x[offset_j : offset_j + 6]
-                pose_j = self._vec_to_pose(vec_j)
-
-            residual = self._edge_residual(pose_i, pose_j, edge)
-
-            def residual_i(vec: np.ndarray) -> np.ndarray:
-                return self._edge_residual(self._vec_to_pose(vec), pose_j, edge)
-
-            def residual_j(vec: np.ndarray) -> np.ndarray:
-                return self._edge_residual(pose_i, self._vec_to_pose(vec), edge)
-
-            jac_i = self._finite_difference_jacobian(residual_i, vec_i)
-            jac_j = self._finite_difference_jacobian(residual_j, vec_j)
-            if anchor_i and not anchor_j:
-                zeros = np.zeros_like(jac_j)
-                yield (edge.j - 1, edge.j - 1, residual, jac_j, zeros, edge.weight)
-            elif anchor_j and not anchor_i:
-                zeros = np.zeros_like(jac_i)
-                yield (edge.i - 1, edge.i - 1, residual, jac_i, zeros, edge.weight)
-            elif not anchor_i and not anchor_j:
-                yield (edge.i - 1, edge.j - 1, residual, jac_i, jac_j, edge.weight)
+            graph.add_factor(
+                SE3BetweenFactor(
+                    edge.i,
+                    edge.j,
+                    measurement_r=edge.R,
+                    measurement_t=edge.t,
+                    weight=edge.weight,
+                    epsilon=self._numeric_epsilon,
+                )
+            )
+        return graph
 
     def optimize(self) -> List[np.ndarray]:
-        x0 = self._pack_variables()
-        if x0.size == 0:
-            return self.poses
-
-        def residuals(x: np.ndarray) -> np.ndarray:
-            res = []
-            for edge in self.edges:
-                pose_i = self._pose_from_vector(x, edge.i)
-                pose_j = self._pose_from_vector(x, edge.j)
-                res.append(self._edge_residual(pose_i, pose_j, edge) * edge.weight)
-            return np.concatenate(res) if res else np.empty(0)
-
+        graph = self._build_factor_graph()
         edges_payload = [
             {
                 "i": edge.i,
@@ -394,38 +286,31 @@ class PoseGraph3D(_BasePoseGraph):
             for edge in self.edges
         ]
         snapshot = PoseGraphSnapshot(
-            version=1,
+            version=2,
             solver_name=self._solver_name,
             loss_config=self._loss_config,
             solver_config=self._solver_config,
             poses=[pose.tolist() for pose in self.poses],
             edges=edges_payload,
-            metadata={"graph_type": "SE3"},
+            metadata={
+                "graph_type": "SE3",
+                "factor_graph": True,
+                "numeric_epsilon": self._numeric_epsilon,
+            },
         )
-        problem = PoseGraphProblem(
-            residual_fn=residuals,
-            linearize_fn=lambda x: (
-                LinearizedResidual(
-                    i=i,
-                    j=j,
-                    residual=residual,
-                    jacobian_i=jac_i,
-                    jacobian_j=jac_j,
-                    weight=weight,
-                )
-                for i, j, residual, jac_i, jac_j, weight in self._linearize_edges(x)
-                if i >= 0 and j >= 0
-            ),
-            parameter_size=x0.size,
-            block_size=6,
-            snapshot=snapshot,
-        )
+        problem, x0, ordered_ids = self._build_problem(graph, snapshot)
+        if x0.size == 0:
+            return self.poses
         x_opt, result = self._solver.solve(problem, x0, self._solver_config, self._loss_config)
         optimized = [self.poses[0]]
-        if x_opt.size:
-            optimized.extend(
-                [self._vec_to_pose(x_opt[i : i + 6]) for i in range(0, x_opt.size, 6)]
-            )
+        for index, var_id in enumerate(ordered_ids):
+            offset = index * 6
+            pose_vec = x_opt[offset : offset + 6]
+            pose = self._vec_to_pose(pose_vec)
+            if var_id < len(self.poses):
+                optimized.append(pose)
+            else:
+                optimized.append(pose)
         self._last_result = result
         self._last_snapshot = snapshot
         logger.info("3D pose graph optimisation success: %s", result.success)
@@ -442,12 +327,14 @@ class PoseGraphSim3D(_BasePoseGraph):
         solver_name: str = "scipy",
         solver_config: SolverConfig | None = None,
         loss_config: RobustLossConfig | None = None,
+        numeric_epsilon: float = 1e-6,
     ) -> None:
         super().__init__(solver_name=solver_name, solver_config=solver_config, loss_config=loss_config)
         self.poses: List[np.ndarray] = [np.eye(4)]
         self.scales: List[float] = [1.0]
         self.edges: List[EdgeSim3D] = []
         self.anchor_weight = anchor_weight
+        self._numeric_epsilon = numeric_epsilon
 
     def add_pose(self, R: np.ndarray, t: np.ndarray, scale: float = 1.0) -> int:
         pose_delta = np.eye(4)
@@ -495,98 +382,27 @@ class PoseGraphSim3D(_BasePoseGraph):
         T[:3, 3] = tvec
         return T, float(np.exp(log_s))
 
-    def _edge_residual(
-        self,
-        pose_i: np.ndarray,
-        scale_i: float,
-        pose_j: np.ndarray,
-        scale_j: float,
-        edge: EdgeSim3D,
-    ) -> np.ndarray:
-        Ri = pose_i[:3, :3]
-        Rj = pose_j[:3, :3]
-        ti = pose_i[:3, 3]
-        tj = pose_j[:3, 3]
-        s_ij = scale_j / scale_i
-        R_ij = Ri.T @ Rj
-        t_ij = (1.0 / scale_i) * (Ri.T @ (tj - ti))
-        R_err = edge.R.T @ R_ij
-        rvec_err, _ = cv2.Rodrigues(R_err)
-        t_err = t_ij - edge.t
-        s_err = np.log(s_ij) - np.log(edge.s)
-        residual = np.hstack([rvec_err.ravel(), t_err.ravel(), s_err])
-        return residual
-
-    def _pack_variables(self) -> np.ndarray:
-        if len(self.poses) <= 1:
-            return np.empty(0)
-        return np.concatenate(
-            [self._pose_to_vec(pose, scale) for pose, scale in zip(self.poses[1:], self.scales[1:])]
-        )
-
-    def _pose_from_vector(self, x: np.ndarray, idx: int) -> tuple[np.ndarray, float]:
-        if idx == 0:
-            return self.poses[0], self.scales[0]
-        offset = (idx - 1) * 7
-        return self._vec_to_pose(x[offset : offset + 7])
-
-    def _linearize_edges(self, x: np.ndarray) -> Iterable:
+    def _build_factor_graph(self) -> FactorGraph:
+        config = FactorGraphConfig(state_dim=7, anchor_ids=(0,), numeric_epsilon=self._numeric_epsilon)
+        graph = FactorGraph(config)
+        for idx, (pose, scale) in enumerate(zip(self.poses, self.scales)):
+            graph.add_variable(idx, self._pose_to_vec(pose, scale))
         for edge in self.edges:
-            anchor_i = edge.i == 0
-            anchor_j = edge.j == 0
-            if edge.i == 0:
-                pose_i = self.poses[0]
-                scale_i = self.scales[0]
-                vec_i = self._pose_to_vec(pose_i, scale_i)
-            else:
-                offset_i = (edge.i - 1) * 7
-                vec_i = x[offset_i : offset_i + 7]
-                pose_i, scale_i = self._vec_to_pose(vec_i)
-            if edge.j == 0:
-                pose_j = self.poses[0]
-                scale_j = self.scales[0]
-                vec_j = self._pose_to_vec(pose_j, scale_j)
-            else:
-                offset_j = (edge.j - 1) * 7
-                vec_j = x[offset_j : offset_j + 7]
-                pose_j, scale_j = self._vec_to_pose(vec_j)
-
-            residual = self._edge_residual(pose_i, scale_i, pose_j, scale_j, edge)
-
-            def residual_i(vec: np.ndarray) -> np.ndarray:
-                pose, scale = self._vec_to_pose(vec)
-                return self._edge_residual(pose, scale, pose_j, scale_j, edge)
-
-            def residual_j(vec: np.ndarray) -> np.ndarray:
-                pose, scale = self._vec_to_pose(vec)
-                return self._edge_residual(pose_i, scale_i, pose, scale, edge)
-
-            jac_i = self._finite_difference_jacobian(residual_i, vec_i)
-            jac_j = self._finite_difference_jacobian(residual_j, vec_j)
-            if anchor_i and not anchor_j:
-                zeros = np.zeros_like(jac_j)
-                yield (edge.j - 1, edge.j - 1, residual, jac_j, zeros, edge.weight)
-            elif anchor_j and not anchor_i:
-                zeros = np.zeros_like(jac_i)
-                yield (edge.i - 1, edge.i - 1, residual, jac_i, zeros, edge.weight)
-            elif not anchor_i and not anchor_j:
-                yield (edge.i - 1, edge.j - 1, residual, jac_i, jac_j, edge.weight)
+            graph.add_factor(
+                Sim3BetweenFactor(
+                    edge.i,
+                    edge.j,
+                    measurement_r=edge.R,
+                    measurement_t=edge.t,
+                    measurement_s=edge.s,
+                    weight=edge.weight,
+                    epsilon=self._numeric_epsilon,
+                )
+            )
+        return graph
 
     def optimize(self) -> List[np.ndarray]:
-        x0 = self._pack_variables()
-        if x0.size == 0:
-            return self.poses
-
-        def residuals(x: np.ndarray) -> np.ndarray:
-            res = []
-            if self.anchor_weight > 0:
-                res.append(self.anchor_weight * self._pose_to_vec(self.poses[0], self.scales[0]))
-            for edge in self.edges:
-                pose_i, scale_i = self._pose_from_vector(x, edge.i)
-                pose_j, scale_j = self._pose_from_vector(x, edge.j)
-                res.append(self._edge_residual(pose_i, scale_i, pose_j, scale_j, edge) * edge.weight)
-            return np.concatenate(res) if res else np.empty(0)
-
+        graph = self._build_factor_graph()
         edges_payload = [
             {
                 "i": edge.i,
@@ -599,38 +415,33 @@ class PoseGraphSim3D(_BasePoseGraph):
             for edge in self.edges
         ]
         snapshot = PoseGraphSnapshot(
-            version=1,
+            version=2,
             solver_name=self._solver_name,
             loss_config=self._loss_config,
             solver_config=self._solver_config,
             poses=[pose.tolist() for pose in self.poses],
             edges=edges_payload,
-            metadata={"graph_type": "Sim3"},
+            metadata={
+                "graph_type": "Sim3",
+                "factor_graph": True,
+                "anchor_weight": self.anchor_weight,
+                "numeric_epsilon": self._numeric_epsilon,
+            },
         )
-        problem = PoseGraphProblem(
-            residual_fn=residuals,
-            linearize_fn=lambda x: (
-                LinearizedResidual(
-                    i=i,
-                    j=j,
-                    residual=residual,
-                    jacobian_i=jac_i,
-                    jacobian_j=jac_j,
-                    weight=weight,
-                )
-                for i, j, residual, jac_i, jac_j, weight in self._linearize_edges(x)
-                if i >= 0 and j >= 0
-            ),
-            parameter_size=x0.size,
-            block_size=7,
-            snapshot=snapshot,
-        )
+        problem, x0, ordered_ids = self._build_problem(graph, snapshot)
+        if x0.size == 0:
+            return self.poses
         x_opt, result = self._solver.solve(problem, x0, self._solver_config, self._loss_config)
         optimized = [self.poses[0]]
         optimized_scales = [self.scales[0]]
-        if x_opt.size:
-            for offset in range(0, x_opt.size, 7):
-                pose, scale = self._vec_to_pose(x_opt[offset : offset + 7])
+        for index, var_id in enumerate(ordered_ids):
+            offset = index * 7
+            pose_vec = x_opt[offset : offset + 7]
+            pose, scale = self._vec_to_pose(pose_vec)
+            if var_id < len(self.poses):
+                optimized.append(pose)
+                optimized_scales.append(scale)
+            else:
                 optimized.append(pose)
                 optimized_scales.append(scale)
         self._last_result = result

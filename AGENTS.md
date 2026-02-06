@@ -11,8 +11,8 @@ and performance gating on KITTI/TUM.
    and robust loss design ahead of micro-optimizations.
 2. **Control-plane resilience**: deterministic supervisors, circuit breakers,
    ordering buffers, and explicit backpressure telemetry.
-3. **Optimization modularity**: solver registry, deterministic solver snapshots,
-   and plug-in robust loss strategies.
+3. **Optimization modularity**: factor-graph abstractions, deterministic solver
+   snapshots, and plug-in robust loss strategies.
 4. **Telemetry intelligence**: cross-run drift detection, stage-level SLOs,
    JSON/CSV export, and regression gating.
 5. **Determinism everywhere**: fixed seeds, explicit configs, and reproducible
@@ -27,6 +27,7 @@ and performance gating on KITTI/TUM.
   ingestion, evaluation, telemetry.
 - Favor algorithmic correctness and reproducibility over premature
   micro-optimizations.
+- Surface performance/quality metrics in structured outputs for CI gating.
 
 ## Release Readiness Targets
 - CI-ready benchmark harness for KITTI/TUM with ATE/RPE + diagnostics gating.
@@ -36,12 +37,13 @@ and performance gating on KITTI/TUM.
   summaries.
 
 ## Senior-Level Milestones
+- **Factor-Graph Optimization Engine**: analytic Jacobians for SE(2),
+  deterministic numeric Jacobians for SE(3)/Sim(3), and robust loss weighting
+  baked into solver kernels.
 - **Telemetry Intelligence Layer**: streaming quantiles, drift evaluation,
   and stage-level SLO dashboards.
 - **Control-Plane Orchestration**: deterministic supervisors, race-condition
   stress gates, and backpressure event logs.
-- **Optimization Modularity**: solver registry extensions with parity testing
-  and deterministic snapshots.
 - **Calibration Drift Automation**: baseline/intrinsics deltas gated in CI with
   retained diagnostics.
 - **Relocalization Resilience**: injection benchmark pack with confidence

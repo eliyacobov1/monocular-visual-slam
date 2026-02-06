@@ -102,10 +102,10 @@ class LinearizedResidual:
     """Linearized residual block for sparse Gauss-Newton."""
 
     i: int
-    j: int
+    j: int | None
     residual: np.ndarray
     jacobian_i: np.ndarray
-    jacobian_j: np.ndarray
+    jacobian_j: np.ndarray | None
     weight: float
 
 
@@ -194,6 +194,15 @@ def _tukey_rho(z: np.ndarray, scale: float) -> np.ndarray:
     rho[1] = np.where(mask, t**2, 0.0)
     rho[2] = np.where(mask, -2.0 * t / (scale**2), 0.0)
     return rho
+
+
+def _robust_weight(residual: np.ndarray, loss: RobustLossConfig) -> float:
+    if residual.size == 0:
+        return 1.0
+    z = np.array([float(residual @ residual)])
+    rho = _robust_loss_rho(z, loss)
+    weight = float(rho[1][0])
+    return max(weight, 1e-12)
 
 
 class ScipyLeastSquaresSolver:
@@ -286,16 +295,19 @@ class GaussNewtonSolver:
             normal = BlockSparseNormalEquation(problem.block_size, problem.parameter_size // problem.block_size)
             residual_norm = 0.0
             for block in linearized:
-                weight = float(block.weight)
+                robust_weight = _robust_weight(block.residual, loss_config)
+                weight = float(block.weight) * robust_weight
                 weighted_residual = np.sqrt(weight) * block.residual
                 residual_norm += float(weighted_residual @ weighted_residual)
                 jac_i = np.sqrt(weight) * block.jacobian_i
-                jac_j = np.sqrt(weight) * block.jacobian_j
                 normal.add_block(block.i, block.i, jac_i.T @ jac_i)
+                normal.add_rhs(block.i, jac_i.T @ weighted_residual)
+                if block.j is None or block.jacobian_j is None:
+                    continue
+                jac_j = np.sqrt(weight) * block.jacobian_j
                 normal.add_block(block.j, block.j, jac_j.T @ jac_j)
                 normal.add_block(block.i, block.j, jac_i.T @ jac_j)
                 normal.add_block(block.j, block.i, jac_j.T @ jac_i)
-                normal.add_rhs(block.i, jac_i.T @ weighted_residual)
                 normal.add_rhs(block.j, jac_j.T @ weighted_residual)
             matrix, rhs = normal.assemble_dense()
             matrix += np.eye(matrix.shape[0]) * solver_config.damping
