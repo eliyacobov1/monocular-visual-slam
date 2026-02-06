@@ -25,6 +25,7 @@ from graph_optimization import (
     SolverResult,
     get_solver_registry,
 )
+from optimization_control_plane import OptimizationControlConfig, OptimizationRunReport, OptimizationSupervisor
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +70,10 @@ class _BasePoseGraph:
         self._solver = get_solver_registry().get(solver_name)
         self._solver_config = solver_config or SolverConfig()
         self._loss_config = loss_config or RobustLossConfig()
+        self._control_config = OptimizationControlConfig()
         self._last_result: SolverResult | None = None
         self._last_snapshot: PoseGraphSnapshot | None = None
+        self._last_report: OptimizationRunReport | None = None
 
     @property
     def last_result(self) -> SolverResult | None:
@@ -79,6 +82,10 @@ class _BasePoseGraph:
     @property
     def last_snapshot(self) -> PoseGraphSnapshot | None:
         return self._last_snapshot
+
+    @property
+    def last_report(self) -> OptimizationRunReport | None:
+        return self._last_report
 
     def configure_solver(
         self,
@@ -94,6 +101,10 @@ class _BasePoseGraph:
             self._solver_config = solver_config
         if loss_config is not None:
             self._loss_config = loss_config
+
+    def configure_control_plane(self, *, control_config: OptimizationControlConfig | None = None) -> None:
+        if control_config is not None:
+            self._control_config = control_config
 
     def _wrap_angle(self, angle: float) -> float:
         return float((angle + np.pi) % (2 * np.pi) - np.pi)
@@ -112,6 +123,25 @@ class _BasePoseGraph:
         problem, x0 = graph.build_problem(snapshot)
         ordered_ids = graph.ordered_variable_ids()
         return problem, x0, ordered_ids
+
+    def _solve_problem(
+        self,
+        problem: PoseGraphProblem,
+        x0: np.ndarray,
+        snapshot: PoseGraphSnapshot,
+    ) -> tuple[np.ndarray, SolverResult, OptimizationRunReport]:
+        supervisor = OptimizationSupervisor(self._control_config)
+        x_opt_list, result, report = supervisor.run(
+            solver=self._solver,
+            problem=problem,
+            x0=x0.tolist(),
+            solver_config=self._solver_config,
+            loss_config=self._loss_config,
+            snapshot=snapshot,
+            solver_name=self._solver_name,
+        )
+        x_opt = np.asarray(x_opt_list, dtype=float)
+        return x_opt, result, report
 
 
 class PoseGraph(_BasePoseGraph):
@@ -197,7 +227,7 @@ class PoseGraph(_BasePoseGraph):
         problem, x0, ordered_ids = self._build_problem(graph, snapshot)
         if x0.size == 0:
             return self.poses
-        x_opt, result = self._solver.solve(problem, x0, self._solver_config, self._loss_config)
+        x_opt, result, report = self._solve_problem(problem, x0, snapshot)
         optimized = [self.poses[0]]
         for index, var_id in enumerate(ordered_ids):
             offset = index * 3
@@ -209,6 +239,7 @@ class PoseGraph(_BasePoseGraph):
                 optimized.append(pose)
         self._last_result = result
         self._last_snapshot = snapshot
+        self._last_report = report
         logger.info("Pose graph optimisation success: %s", result.success)
         return optimized
 
@@ -301,7 +332,7 @@ class PoseGraph3D(_BasePoseGraph):
         problem, x0, ordered_ids = self._build_problem(graph, snapshot)
         if x0.size == 0:
             return self.poses
-        x_opt, result = self._solver.solve(problem, x0, self._solver_config, self._loss_config)
+        x_opt, result, report = self._solve_problem(problem, x0, snapshot)
         optimized = [self.poses[0]]
         for index, var_id in enumerate(ordered_ids):
             offset = index * 6
@@ -313,6 +344,7 @@ class PoseGraph3D(_BasePoseGraph):
                 optimized.append(pose)
         self._last_result = result
         self._last_snapshot = snapshot
+        self._last_report = report
         logger.info("3D pose graph optimisation success: %s", result.success)
         return optimized
 
@@ -431,7 +463,7 @@ class PoseGraphSim3D(_BasePoseGraph):
         problem, x0, ordered_ids = self._build_problem(graph, snapshot)
         if x0.size == 0:
             return self.poses
-        x_opt, result = self._solver.solve(problem, x0, self._solver_config, self._loss_config)
+        x_opt, result, report = self._solve_problem(problem, x0, snapshot)
         optimized = [self.poses[0]]
         optimized_scales = [self.scales[0]]
         for index, var_id in enumerate(ordered_ids):
@@ -446,6 +478,7 @@ class PoseGraphSim3D(_BasePoseGraph):
                 optimized_scales.append(scale)
         self._last_result = result
         self._last_snapshot = snapshot
+        self._last_report = report
         self.scales = optimized_scales
         logger.info("Sim(3) pose graph optimisation success: %s", result.success)
         return optimized
