@@ -1,34 +1,34 @@
 # Strategic Roadmap (Principal Engineer Milestones)
 
-## Milestone 1: Factor-Graph Optimization Engine
-- Analytic SE(2) Jacobians with deterministic numeric SE(3)/Sim(3) fallbacks.
-- Robust loss weighting integrated into Gauss-Newton and solver registries.
-- Deterministic solver snapshots with regression artifacts for every run.
+## Milestone 1: Deterministic Block-Sparse Optimization Core
+- Block-sparse Gauss-Newton with preconditioned conjugate-gradient solves.
+- Solver telemetry (iteration diagnostics, linear solver convergence traces).
+- Deterministic solver snapshots aligned with regression gating and artifact export.
 
-## Milestone 2: Optimization Telemetry & Regression Gates
-- Per-iteration solver telemetry (residual norms, convergence status).
-- Drift thresholds for optimization metrics (ATE/RPE deltas, solver stability).
-- CI gating on solver snapshot digests and convergence consistency.
+## Milestone 2: Multi-Stage Control-Plane Resilience
+- Asynchronous ingestion orchestration with ordering buffers and circuit breakers.
+- Backpressure telemetry, circuit-breaker trip diagnostics, and replay-safe buffers.
+- Race-condition stress harnesses with deterministic supervisors and escalation paths.
 
-## Milestone 3: Control-Plane Orchestration 4.0
-- Deterministic supervisor cadence, circuit breakers, and ordering buffers.
-- Race-condition stress harnesses with backpressure and latency diagnostics.
-- Stage-level ingestion SLOs with regression thresholds.
+## Milestone 3: Telemetry Intelligence + Drift Governance
+- Streaming quantiles, variance, and stage-level SLO envelopes.
+- Cross-run drift detection with automatic mitigation guidance.
+- JSON/CSV export for CI gating and historical dashboards.
 
-## Milestone 4: Telemetry Intelligence Platform
-- Streaming quantiles (p50/p90/p95/p99), variance, and per-stage SLO envelopes.
-- Drift evaluation with relative/absolute policies and CI regression gates.
-- CSV/JSON export for cross-run dashboards and incident triage.
+## Milestone 4: Relocalization + Loop Closure Hardening
+- Recovery latency benchmarks with confidence intervals.
+- Loop-closure verification packs with failure isolation scores.
+- Regression gates for relocalization success rates.
 
 ## Milestone 5: Calibration Drift Automation
-- Baseline/intrinsics deltas gated in CI with retained JSON/plot artifacts.
-- Automated remediation reports and drift trend analysis.
+- Baseline/intrinsics delta monitoring with CI gates.
+- Retained diagnostics and trend reports for drift recovery.
 
-## Milestone 6: Relocalization Resilience Suite
-- Injection benchmark pack with confidence intervals and recovery latency scores.
-- Failure isolation metrics and deterministic recovery buffers.
-
-## Milestone 7: Multi-Sensor Expansion Blueprint
+## Milestone 6: Multi-Sensor Expansion Blueprint
 - IMU/GPS fusion interfaces with deterministic synchronization.
 - Multi-camera staging APIs and data alignment scaffolding.
 - C++ hooks for latency-critical optimization kernels.
+
+## Milestone 7: Industrial Benchmark Harness
+- CI-ready benchmark suite for KITTI/TUM with ATE/RPE gating.
+- Deterministic artifacts for regression tracking and release readiness.

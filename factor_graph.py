@@ -71,6 +71,17 @@ class FactorGraph:
     def ordered_variable_ids(self) -> list[int]:
         return sorted(var_id for var_id in self.variables.keys() if var_id not in self.config.anchor_ids)
 
+    def ordered_factors(self) -> list[BinaryFactor]:
+        return sorted(
+            self.factors,
+            key=lambda factor: (
+                factor.i,
+                factor.j,
+                float(factor.weight),
+                type(factor).__name__,
+            ),
+        )
+
     def _pack_state(self) -> np.ndarray:
         ordered_ids = self.ordered_variable_ids()
         if not ordered_ids:
@@ -96,7 +107,7 @@ class FactorGraph:
         def residuals(x: np.ndarray) -> np.ndarray:
             state = self._unpack_state(x)
             residual_blocks: list[np.ndarray] = []
-            for factor in self.factors:
+            for factor in self.ordered_factors():
                 xi = state[factor.i]
                 xj = state[factor.j]
                 residual = factor.residual(xi, xj)
@@ -107,7 +118,7 @@ class FactorGraph:
 
         def linearize(x: np.ndarray) -> Iterable[LinearizedResidual]:
             state = self._unpack_state(x)
-            for factor in self.factors:
+            for factor in self.ordered_factors():
                 if factor.i in self.config.anchor_ids and factor.j in self.config.anchor_ids:
                     continue
                 xi = state[factor.i]

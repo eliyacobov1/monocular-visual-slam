@@ -45,6 +45,8 @@ class SolverConfig:
     xtol: float = 1e-10
     ftol: float = 1e-10
     gtol: float = 1e-10
+    linear_solver_max_iter: int = 200
+    linear_solver_tol: float = 1e-8
 
     def __post_init__(self) -> None:
         if self.max_iterations <= 0:
@@ -55,6 +57,30 @@ class SolverConfig:
             raise ValueError("damping must be non-negative")
         if self.step_scale <= 0:
             raise ValueError("step_scale must be positive")
+        if self.linear_solver_max_iter <= 0:
+            raise ValueError("linear_solver_max_iter must be positive")
+        if self.linear_solver_tol <= 0:
+            raise ValueError("linear_solver_tol must be positive")
+
+
+@dataclass(frozen=True)
+class IterationDiagnostics:
+    """Per-iteration diagnostics for optimization."""
+
+    iteration: int
+    residual_norm: float
+    step_norm: float
+    linear_solver_iterations: int
+    linear_solver_residual: float
+    damping: float
+
+
+@dataclass(frozen=True)
+class SolverDiagnostics:
+    """Aggregated diagnostics for a solver run."""
+
+    iterations: tuple[IterationDiagnostics, ...]
+    status: str
 
 
 @dataclass(frozen=True)
@@ -67,6 +93,7 @@ class SolverResult:
     residual_norm: float
     iterations: int
     message: str
+    diagnostics: SolverDiagnostics | None = None
 
 
 @dataclass(frozen=True)
@@ -236,44 +263,189 @@ class ScipyLeastSquaresSolver:
             residual_norm=residual_norm,
             iterations=int(result.nfev),
             message=str(result.message),
+            diagnostics=None,
         )
         return result.x, summary
 
 
-class BlockSparseNormalEquation:
-    """Sparse block normal equation accumulator."""
+class BlockSparseMatrix:
+    """Deterministic block-sparse matrix with row/column indexing."""
 
     def __init__(self, block_size: int, num_blocks: int) -> None:
+        if block_size <= 0 or num_blocks <= 0:
+            raise ValueError("block_size and num_blocks must be positive")
         self._block_size = block_size
         self._num_blocks = num_blocks
         self._blocks: dict[tuple[int, int], np.ndarray] = {}
-        self._rhs: dict[int, np.ndarray] = {}
+
+    @property
+    def block_size(self) -> int:
+        return self._block_size
+
+    @property
+    def num_blocks(self) -> int:
+        return self._num_blocks
 
     def add_block(self, i: int, j: int, block: np.ndarray) -> None:
+        if block.shape != (self._block_size, self._block_size):
+            raise ValueError("block has incorrect shape")
         key = (i, j)
         if key in self._blocks:
             self._blocks[key] += block
         else:
             self._blocks[key] = block.copy()
 
-    def add_rhs(self, i: int, rhs: np.ndarray) -> None:
-        if i in self._rhs:
-            self._rhs[i] += rhs
-        else:
-            self._rhs[i] = rhs.copy()
+    def add_to_diagonal(self, value: float) -> None:
+        if value == 0:
+            return
+        diag = np.eye(self._block_size) * value
+        for idx in range(self._num_blocks):
+            self.add_block(idx, idx, diag)
 
-    def assemble_dense(self) -> tuple[np.ndarray, np.ndarray]:
+    def diagonal_blocks(self) -> dict[int, np.ndarray]:
+        diag: dict[int, np.ndarray] = {}
+        for (i, j), block in self._blocks.items():
+            if i == j:
+                diag[i] = block
+        return diag
+
+    def matvec(self, vec: np.ndarray) -> np.ndarray:
         size = self._block_size * self._num_blocks
-        matrix = np.zeros((size, size), dtype=float)
-        rhs = np.zeros(size, dtype=float)
+        if vec.size != size:
+            raise ValueError("vector size mismatch")
+        result = np.zeros(size, dtype=float)
+        for i, j in sorted(self._blocks.keys()):
+            block = self._blocks[(i, j)]
+            row = slice(i * self._block_size, (i + 1) * self._block_size)
+            col = slice(j * self._block_size, (j + 1) * self._block_size)
+            result[row] += block @ vec[col]
+        return result
+
+    def to_dense(self) -> np.ndarray:
+        size = self._block_size * self._num_blocks
+        dense = np.zeros((size, size), dtype=float)
         for (i, j), block in self._blocks.items():
             row = slice(i * self._block_size, (i + 1) * self._block_size)
             col = slice(j * self._block_size, (j + 1) * self._block_size)
-            matrix[row, col] += block
-        for idx, block_rhs in self._rhs.items():
+            dense[row, col] += block
+        return dense
+
+
+class BlockSparseNormalEquation:
+    """Sparse block normal equation accumulator."""
+
+    def __init__(self, block_size: int, num_blocks: int) -> None:
+        self._matrix = BlockSparseMatrix(block_size, num_blocks)
+        self._rhs = np.zeros(block_size * num_blocks, dtype=float)
+
+    @property
+    def matrix(self) -> BlockSparseMatrix:
+        return self._matrix
+
+    @property
+    def rhs(self) -> np.ndarray:
+        return self._rhs
+
+    def add_block(self, i: int, j: int, block: np.ndarray) -> None:
+        self._matrix.add_block(i, j, block)
+
+    def add_rhs(self, i: int, rhs: np.ndarray) -> None:
+        block_size = self._matrix.block_size
+        if rhs.shape != (block_size,):
+            raise ValueError("rhs block has incorrect shape")
+        row = slice(i * block_size, (i + 1) * block_size)
+        self._rhs[row] += rhs
+
+
+@dataclass(frozen=True)
+class ConjugateGradientResult:
+    """Result for conjugate-gradient solves."""
+
+    solution: np.ndarray
+    iterations: int
+    residual_norm: float
+    converged: bool
+
+
+class BlockDiagonalPreconditioner:
+    """Block-diagonal preconditioner for sparse linear systems."""
+
+    def __init__(self, matrix: BlockSparseMatrix, jitter: float = 1e-9) -> None:
+        self._block_size = matrix.block_size
+        self._num_blocks = matrix.num_blocks
+        self._inverse_blocks: dict[int, np.ndarray] = {}
+        for idx, block in matrix.diagonal_blocks().items():
+            adjusted = block + np.eye(self._block_size) * jitter
+            try:
+                self._inverse_blocks[idx] = np.linalg.inv(adjusted)
+            except np.linalg.LinAlgError:
+                self._inverse_blocks[idx] = np.linalg.pinv(adjusted)
+
+    def apply(self, vec: np.ndarray) -> np.ndarray:
+        if vec.size != self._block_size * self._num_blocks:
+            raise ValueError("vector size mismatch for preconditioner")
+        result = np.zeros_like(vec)
+        for idx in range(self._num_blocks):
             row = slice(idx * self._block_size, (idx + 1) * self._block_size)
-            rhs[row] += block_rhs
-        return matrix, rhs
+            inv_block = self._inverse_blocks.get(idx)
+            if inv_block is None:
+                result[row] = vec[row]
+            else:
+                result[row] = inv_block @ vec[row]
+        return result
+
+
+class ConjugateGradientSolver:
+    """Deterministic conjugate-gradient solver for SPD systems."""
+
+    def solve(
+        self,
+        matrix: BlockSparseMatrix,
+        rhs: np.ndarray,
+        *,
+        max_iter: int,
+        tol: float,
+        preconditioner: BlockDiagonalPreconditioner | None = None,
+    ) -> ConjugateGradientResult:
+        size = matrix.block_size * matrix.num_blocks
+        if rhs.size != size:
+            raise ValueError("rhs size mismatch")
+        x = np.zeros(size, dtype=float)
+        r = rhs - matrix.matvec(x)
+        if preconditioner is None:
+            z = r.copy()
+        else:
+            z = preconditioner.apply(r)
+        p = z.copy()
+        rz_old = float(r @ z)
+        residual_norm = float(np.linalg.norm(r))
+        if residual_norm <= tol:
+            return ConjugateGradientResult(x, 0, residual_norm, True)
+        converged = False
+        iterations = 0
+        for iterations in range(1, max_iter + 1):
+            ap = matrix.matvec(p)
+            denom = float(p @ ap)
+            if denom == 0:
+                break
+            alpha = rz_old / denom
+            x += alpha * p
+            r -= alpha * ap
+            residual_norm = float(np.linalg.norm(r))
+            if residual_norm <= tol:
+                converged = True
+                break
+            if preconditioner is None:
+                z = r.copy()
+            else:
+                z = preconditioner.apply(r)
+            rz_new = float(r @ z)
+            if rz_old == 0:
+                break
+            beta = rz_new / rz_old
+            p = z + beta * p
+            rz_old = rz_new
+        return ConjugateGradientResult(x, iterations, residual_norm, converged)
 
 
 class GaussNewtonSolver:
@@ -287,46 +459,81 @@ class GaussNewtonSolver:
         loss_config: RobustLossConfig,
     ) -> tuple[np.ndarray, SolverResult]:
         x = x0.copy()
+        diagnostics: list[IterationDiagnostics] = []
         iterations = 0
+        status = 1
+        message = "Gauss-Newton completed"
         for iterations in range(1, solver_config.max_iterations + 1):
             linearized = list(problem.linearize_fn(x))
             if not linearized:
+                LOGGER.info("No linearized residuals available; exiting early")
                 break
-            normal = BlockSparseNormalEquation(problem.block_size, problem.parameter_size // problem.block_size)
+            num_blocks = problem.parameter_size // problem.block_size
+            normal = BlockSparseNormalEquation(problem.block_size, num_blocks)
             residual_norm = 0.0
             for block in linearized:
                 robust_weight = _robust_weight(block.residual, loss_config)
                 weight = float(block.weight) * robust_weight
-                weighted_residual = np.sqrt(weight) * block.residual
+                sqrt_w = np.sqrt(weight)
+                weighted_residual = sqrt_w * block.residual
                 residual_norm += float(weighted_residual @ weighted_residual)
-                jac_i = np.sqrt(weight) * block.jacobian_i
+                jac_i = sqrt_w * block.jacobian_i
                 normal.add_block(block.i, block.i, jac_i.T @ jac_i)
                 normal.add_rhs(block.i, jac_i.T @ weighted_residual)
                 if block.j is None or block.jacobian_j is None:
                     continue
-                jac_j = np.sqrt(weight) * block.jacobian_j
+                jac_j = sqrt_w * block.jacobian_j
                 normal.add_block(block.j, block.j, jac_j.T @ jac_j)
                 normal.add_block(block.i, block.j, jac_i.T @ jac_j)
                 normal.add_block(block.j, block.i, jac_j.T @ jac_i)
                 normal.add_rhs(block.j, jac_j.T @ weighted_residual)
-            matrix, rhs = normal.assemble_dense()
-            matrix += np.eye(matrix.shape[0]) * solver_config.damping
-            try:
-                step = np.linalg.solve(matrix, -rhs)
-            except np.linalg.LinAlgError as exc:
-                LOGGER.warning("Gauss-Newton failed to solve linear system: %s", exc)
-                break
+            normal.matrix.add_to_diagonal(solver_config.damping)
+            preconditioner = BlockDiagonalPreconditioner(normal.matrix)
+            cg = ConjugateGradientSolver()
+            cg_result = cg.solve(
+                normal.matrix,
+                -normal.rhs,
+                max_iter=solver_config.linear_solver_max_iter,
+                tol=solver_config.linear_solver_tol,
+                preconditioner=preconditioner,
+            )
+            if not cg_result.converged:
+                LOGGER.warning(
+                    "Conjugate-gradient did not converge: residual=%.6f",
+                    cg_result.residual_norm,
+                )
+            step = cg_result.solution
+            step_norm = float(np.linalg.norm(step))
+            diagnostics.append(
+                IterationDiagnostics(
+                    iteration=iterations,
+                    residual_norm=float(np.sqrt(residual_norm)),
+                    step_norm=step_norm,
+                    linear_solver_iterations=cg_result.iterations,
+                    linear_solver_residual=cg_result.residual_norm,
+                    damping=solver_config.damping,
+                )
+            )
             x += solver_config.step_scale * step
-            if np.linalg.norm(step) < solver_config.xtol:
+            if step_norm < solver_config.xtol:
+                message = "Converged (step tolerance)"
+                break
+            if float(np.sqrt(residual_norm)) < solver_config.ftol:
+                message = "Converged (residual tolerance)"
+                break
+            if not cg_result.converged:
+                status = 0
+                message = "Linear solver failed to converge"
                 break
         residual = problem.residual_fn(x)
         summary = SolverResult(
-            success=True,
-            status=1,
+            success=status == 1,
+            status=status,
             cost=float(0.5 * np.dot(residual, residual)),
             residual_norm=float(np.linalg.norm(residual)),
             iterations=iterations,
-            message="Gauss-Newton completed",
+            message=message,
+            diagnostics=SolverDiagnostics(iterations=tuple(diagnostics), status=message),
         )
         return x, summary
 
@@ -336,8 +543,13 @@ _SOLVER_REGISTRY.register("gauss_newton", GaussNewtonSolver())
 
 
 __all__ = [
+    "BlockDiagonalPreconditioner",
+    "BlockSparseMatrix",
     "BlockSparseNormalEquation",
+    "ConjugateGradientResult",
+    "ConjugateGradientSolver",
     "GaussNewtonSolver",
+    "IterationDiagnostics",
     "LinearizedResidual",
     "PoseGraphProblem",
     "PoseGraphSnapshot",
@@ -345,6 +557,7 @@ __all__ = [
     "RobustLossConfig",
     "RobustLossType",
     "SolverConfig",
+    "SolverDiagnostics",
     "SolverRegistry",
     "SolverResult",
     "get_solver_registry",
