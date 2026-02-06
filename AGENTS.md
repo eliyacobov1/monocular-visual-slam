@@ -1,54 +1,55 @@
-# Agent Instructions (Senior-Grade SLAM)
+# Agent Instructions (Principal-Grade SLAM Overhaul)
 
 ## Mission
-Deliver a production-grade monocular visual SLAM system with **accuracy-first**
-performance on KITTI/TUM, deterministic solver artifacts, and a resilient
-asynchronous ingestion control plane that is regression-gate ready.
+Deliver a production-grade monocular visual SLAM system that is **accuracy-first**,
+telemetry-driven, and determinism-anchored, with modular optimization backends
+and a resilient, asynchronous ingestion control plane suitable for regression
+and performance gating on KITTI/TUM.
 
-## Engineering priorities
-1. **Accuracy over speed**: improve pose estimation, loop closure, and
-   trajectory stability ahead of micro-optimizations.
-2. **Control-plane resilience**: stage supervisors, circuit breakers,
-   deterministic ordering buffers, and structured telemetry with explicit
-   backpressure visibility.
-3. **Graph-optimization modularity**: pluggable solver interfaces, robust-loss
-   selection, and deterministic solver snapshots for regression gating.
-4. **Determinism everywhere**: fixed seeds, explicit configs, reproducible
-   artifacts for every benchmark run.
-5. **Roadmap-ready interfaces**: APIs prepared for multi-camera and
-   multi-sensor (IMU/GPS) expansion, with C++ hooks for latency-critical
-   modules.
+## Engineering Priorities
+1. **Accuracy over speed**: prioritize pose stability, loop closure fidelity,
+   and robust loss design ahead of micro-optimizations.
+2. **Control-plane resilience**: deterministic supervisors, circuit breakers,
+   ordering buffers, and explicit backpressure telemetry.
+3. **Optimization modularity**: solver registry, deterministic solver snapshots,
+   and plug-in robust loss strategies.
+4. **Telemetry intelligence**: cross-run drift detection, stage-level SLOs,
+   JSON/CSV export, and regression gating.
+5. **Determinism everywhere**: fixed seeds, explicit configs, and reproducible
+   artifacts for every benchmark/CI run.
+6. **Roadmap-ready extensibility**: multi-camera and multi-sensor (IMU/GPS)
+   hooks with C++ acceleration paths.
 
-## Code quality expectations
+## Code Quality Expectations
 - Prefer readable, well-typed Python with explicit config objects.
-- Log with structured context (no noisy prints).
-- Keep modules separated by responsibility (data, tracking, optimization,
-  ingestion, evaluation, telemetry).
-- Favor algorithmic improvements and reproducibility over premature
+- Use structured logging (no noisy prints).
+- Keep modules separated by responsibility: data, tracking, optimization,
+  ingestion, evaluation, telemetry.
+- Favor algorithmic correctness and reproducibility over premature
   micro-optimizations.
 
-## Release readiness targets
+## Release Readiness Targets
 - CI-ready benchmark harness for KITTI/TUM with ATE/RPE + diagnostics gating.
-- Regression thresholds for telemetry latency drift and calibration drift.
+- Deterministic solver snapshots and regression thresholds for telemetry drift.
 - Reproducible demo scripts and persistent run artifacts.
 - Failure-isolated ingestion pipeline with backpressure metrics and scale
   summaries.
 
-## Senior-level milestones
-- **Control-plane orchestration**: deterministic stage supervisors, backpressure
-  event logs, and race-condition stress gates.
-- **Graph-optimization modularity**: solver registry with deterministic
-  snapshots and accuracy regression gates.
-- **Calibration drift automation**: baseline/intrinsics deltas gated in CI with
+## Senior-Level Milestones
+- **Telemetry Intelligence Layer**: streaming quantiles, drift evaluation,
+  and stage-level SLO dashboards.
+- **Control-Plane Orchestration**: deterministic supervisors, race-condition
+  stress gates, and backpressure event logs.
+- **Optimization Modularity**: solver registry extensions with parity testing
+  and deterministic snapshots.
+- **Calibration Drift Automation**: baseline/intrinsics deltas gated in CI with
   retained diagnostics.
-- **Relocalization resilience**: injection benchmark pack with confidence
+- **Relocalization Resilience**: injection benchmark pack with confidence
   intervals, recovery latency, and robustness scoring.
-- **Telemetry intelligence**: cross-run latency drift analysis, CSV/JSON export
-  APIs, and regression gating for stage-level metrics.
-- **Multi-sensor readiness**: extensible interfaces for IMU/GPS fusion and C++
-  hooks for latency-critical tracking.
+- **Multi-Sensor Expansion**: IMU/GPS fusion interfaces with deterministic
+  synchronization and C++ hooks.
 
-## Workflow notes
+## Workflow Notes
 - Update documentation when pipeline behavior changes.
 - Add tests/benchmarks when improving accuracy or infrastructure.
 - Preserve deterministic behavior in evaluations.
