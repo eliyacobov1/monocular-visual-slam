@@ -20,17 +20,19 @@ from ingestion_control_plane import (
     BackpressureTimeout,
     CircuitBreaker,
     CircuitBreakerConfig,
-    ControlPlaneSupervisor,
+    ControlPlaneOrchestrator,
     DeterministicReorderBuffer,
     DynamicWorkerPool,
     IngestionClosed,
     IngestionFailureEvent,
     IngestionFailureReport,
     IngestionTelemetry,
-    LatencySample,
     OrderingBufferConfig,
     QueueTuningConfig,
     RetryPolicyConfig,
+    StageEvent,
+    StageLatencySample,
+    StageSupervisor,
     WorkerPoolConfig,
 )
 
@@ -201,20 +203,32 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
         self._executor: concurrent.futures.Executor | None = None
         self._futures: dict[concurrent.futures.Future[np.ndarray | None], FrameSourceEntry] = {}
         self._futures_lock = threading.Lock()
-        self._supervisor = ControlPlaneSupervisor(
-            entry_queue=self._entry_queue,
-            output_queue=self._output_queue,
-            worker_pool=self._worker_pool,
-            entry_tuning=self._config.entry_queue_tuning,
-            output_tuning=self._config.output_queue_tuning,
-            worker_config=self._config.worker_pool,
+        self._entry_supervisor = StageSupervisor(
+            stage="entry",
+            queue=self._entry_queue,
+            tuning=self._config.entry_queue_tuning,
             telemetry=self._telemetry,
+            interval_s=self._config.worker_pool.supervisor_interval_s,
+            worker_pool=self._worker_pool,
+            worker_config=self._config.worker_pool,
             spawn_worker=self._spawn_worker,
             retire_worker=self._request_worker_retire,
             inflight_count=self._inflight_count,
+            ema_alpha=self._config.supervisor_ema_alpha,
+        )
+        self._output_supervisor = StageSupervisor(
+            stage="output",
+            queue=self._output_queue,
+            tuning=self._config.output_queue_tuning,
+            telemetry=self._telemetry,
+            interval_s=self._config.worker_pool.supervisor_interval_s,
+            ema_alpha=self._config.supervisor_ema_alpha,
+        )
+        self._control_plane = ControlPlaneOrchestrator(
+            supervisors=[self._entry_supervisor, self._output_supervisor],
             stop_event=self._stop_event,
             producer_done=self._producer_done,
-            ema_alpha=self._config.supervisor_ema_alpha,
+            drain_condition=self._control_plane_drained,
         )
 
     @property
@@ -339,6 +353,13 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
             return inflight_empty and self._producer_done.is_set() and self._entry_queue.size == 0
         return completed_workers >= self._worker_pool.total_spawned and self._ordering_buffer.size == 0
 
+    def _control_plane_drained(self) -> bool:
+        if self._entry_queue.size > 0:
+            return False
+        if self._output_queue.size > 0:
+            return False
+        return True
+
     def _spawn_worker(self) -> None:
         worker_index = self._worker_pool.register_spawn()
         worker = threading.Thread(
@@ -360,10 +381,10 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
 
     def _run_supervisor(self) -> None:
         try:
-            self._supervisor.run()
+            self._control_plane.run()
         except Exception as exc:  # pragma: no cover - supervisor failure
             self._error = exc
-            LOGGER.exception("Ingestion supervisor failed")
+            LOGGER.exception("Ingestion control plane failed")
 
     def _run_producer(self) -> None:
         try:
@@ -401,7 +422,9 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 try:
                     entry = self._entry_queue.get(timeout_s=self._config.read_timeout_s)
                 except BackpressureTimeout:
-                    if self._stop_event.is_set() or (self._producer_done.is_set() and self._entry_queue.size == 0):
+                    if self._stop_event.is_set() or (
+                        self._producer_done.is_set() and self._entry_queue.size == 0
+                    ):
                         break
                     continue
                 except IngestionClosed:
@@ -412,7 +435,15 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 if not self._breaker.allow():
                     error = "circuit_breaker_open"
                     self._stats.dropped_frames += 1
-                    self._telemetry.circuit_breaker_opens += 1
+                    self._telemetry.stage_metrics("decode").circuit_breaker_opens += 1
+                    self._telemetry.record_event(
+                        StageEvent(
+                            stage="decode",
+                            event_type="circuit_breaker_open",
+                            message="Circuit breaker open",
+                            metadata={"seq_id": frame_entry.seq_id},
+                        )
+                    )
                     self._record_failure(frame_entry.seq_id, "circuit_breaker", error, frame_entry.path)
                     self._emit_drop_marker(frame_entry.seq_id, error, 0.0, 0.0)
                     if self._config.fail_fast:
@@ -429,7 +460,15 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                     error = f"Failed to read frame: {frame_entry.path}"
                     breaker_opened = self._breaker.record_failure()
                     if breaker_opened:
-                        self._telemetry.circuit_breaker_opens += 1
+                        self._telemetry.stage_metrics("decode").circuit_breaker_opens += 1
+                        self._telemetry.record_event(
+                            StageEvent(
+                                stage="decode",
+                                event_type="circuit_breaker_open",
+                                message="Circuit breaker tripped",
+                                metadata={"seq_id": frame_entry.seq_id},
+                            )
+                        )
                     self._record_failure(frame_entry.seq_id, "read", error, frame_entry.path)
                     if self._config.fail_fast:
                         raise RuntimeError(error)
@@ -453,8 +492,13 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                     self._emit_drop_marker(frame_entry.seq_id, error, decode_s, queue_wait_s)
                     continue
                 self._stats.decoded_frames += 1
-                self._telemetry.record_latency(
-                    LatencySample(timestamp_s=time.time(), decode_s=decode_s, queue_wait_s=queue_wait_s)
+                self._telemetry.record_stage_latency(
+                    StageLatencySample(
+                        timestamp_s=time.time(),
+                        stage="decode",
+                        decode_s=decode_s,
+                        queue_wait_s=queue_wait_s,
+                    )
                 )
                 self._stats.max_output_queue_depth = max(
                     self._stats.max_output_queue_depth, self._output_queue.size
@@ -474,7 +518,9 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 try:
                     entry = self._entry_queue.get(timeout_s=self._config.read_timeout_s)
                 except BackpressureTimeout:
-                    if self._stop_event.is_set() or (self._producer_done.is_set() and self._entry_queue.size == 0):
+                    if self._stop_event.is_set() or (
+                        self._producer_done.is_set() and self._entry_queue.size == 0
+                    ):
                         break
                     continue
                 except IngestionClosed:
@@ -484,7 +530,15 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 if not self._breaker.allow():
                     error = "circuit_breaker_open"
                     self._stats.dropped_frames += 1
-                    self._telemetry.circuit_breaker_opens += 1
+                    self._telemetry.stage_metrics("decode").circuit_breaker_opens += 1
+                    self._telemetry.record_event(
+                        StageEvent(
+                            stage="decode",
+                            event_type="circuit_breaker_open",
+                            message="Circuit breaker open",
+                            metadata={"seq_id": entry.seq_id},
+                        )
+                    )
                     self._record_failure(entry.seq_id, "circuit_breaker", error, entry.path)
                     self._emit_drop_marker(entry.seq_id, error, 0.0, 0.0)
                     if self._config.fail_fast:
@@ -541,7 +595,15 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 error = f"decode_exception: {exc}"
                 breaker_opened = self._breaker.record_failure()
                 if breaker_opened:
-                    self._telemetry.circuit_breaker_opens += 1
+                    self._telemetry.stage_metrics("decode").circuit_breaker_opens += 1
+                    self._telemetry.record_event(
+                        StageEvent(
+                            stage="decode",
+                            event_type="circuit_breaker_open",
+                            message="Circuit breaker tripped",
+                            metadata={"seq_id": entry.seq_id},
+                        )
+                    )
                 self._record_failure(entry.seq_id, "decode_exception", error, entry.path)
                 if self._config.fail_fast:
                     self._error = exc
@@ -559,7 +621,15 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 error = f"Failed to read frame: {entry.path}"
                 breaker_opened = self._breaker.record_failure()
                 if breaker_opened:
-                    self._telemetry.circuit_breaker_opens += 1
+                    self._telemetry.stage_metrics("decode").circuit_breaker_opens += 1
+                    self._telemetry.record_event(
+                        StageEvent(
+                            stage="decode",
+                            event_type="circuit_breaker_open",
+                            message="Circuit breaker tripped",
+                            metadata={"seq_id": entry.seq_id},
+                        )
+                    )
                 self._record_failure(entry.seq_id, "read", error, entry.path)
                 if self._config.fail_fast:
                     self._error = RuntimeError(error)
@@ -587,8 +657,13 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
                 self._emit_drop_marker(entry.seq_id, error, decode_s, queue_wait_s)
                 continue
             self._stats.decoded_frames += 1
-            self._telemetry.record_latency(
-                LatencySample(timestamp_s=time.time(), decode_s=decode_s, queue_wait_s=queue_wait_s)
+            self._telemetry.record_stage_latency(
+                StageLatencySample(
+                    timestamp_s=time.time(),
+                    stage="decode",
+                    decode_s=decode_s,
+                    queue_wait_s=queue_wait_s,
+                )
             )
             self._stats.max_output_queue_depth = max(
                 self._stats.max_output_queue_depth, self._output_queue.size
@@ -614,6 +689,15 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
             self._entry_queue.put(item, timeout_s=self._config.read_timeout_s)
             return True
         except (BackpressureTimeout, IngestionClosed):
+            self._telemetry.stage_metrics("entry").backpressure_events += 1
+            self._telemetry.record_event(
+                StageEvent(
+                    stage="entry",
+                    event_type="backpressure",
+                    message="Entry queue backpressure",
+                    metadata={"capacity": self._entry_queue.capacity},
+                )
+            )
             return False
 
     def _safe_put_output(self, item: DecodedFrame | object) -> bool:
@@ -621,6 +705,15 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
             self._output_queue.put(item, timeout_s=self._config.decode_timeout_s)
             return True
         except (BackpressureTimeout, IngestionClosed):
+            self._telemetry.stage_metrics("output").backpressure_events += 1
+            self._telemetry.record_event(
+                StageEvent(
+                    stage="output",
+                    event_type="backpressure",
+                    message="Output queue backpressure",
+                    metadata={"capacity": self._output_queue.capacity},
+                )
+            )
             return False
 
     def _emit_drop_marker(self, seq_id: int, error: str, decode_s: float, queue_wait_s: float) -> None:

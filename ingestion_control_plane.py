@@ -6,8 +6,9 @@ import logging
 import threading
 import time
 from collections import Counter, deque
-from dataclasses import dataclass, field
-from typing import Callable, Deque, Literal, Protocol, TypeVar
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from typing import Callable, Deque, Iterable, Literal, Protocol, TypeVar
 
 LOGGER = logging.getLogger(__name__)
 
@@ -178,6 +179,57 @@ class OrderingBufferConfig:
     forced_flush_ratio: float = 0.75
 
 
+class StageState(str, Enum):
+    """Lifecycle state for a supervised ingestion stage."""
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    TRIPPED = "tripped"
+    RECOVERING = "recovering"
+
+
+@dataclass(frozen=True)
+class StageEvent:
+    """Structured event emitted by the control plane."""
+
+    stage: str
+    event_type: str
+    message: str
+    metadata: dict[str, object] = field(default_factory=dict)
+    timestamp_s: float = field(default_factory=time.time)
+
+    def asdict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+class DeterministicEventLog:
+    """Ring buffer for structured control-plane events."""
+
+    def __init__(self, capacity: int = 512) -> None:
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        self._capacity = capacity
+        self._events: Deque[StageEvent] = deque(maxlen=capacity)
+        self._lock = threading.Lock()
+
+    def record(self, event: StageEvent) -> None:
+        with self._lock:
+            self._events.append(event)
+
+    def snapshot(self) -> list[StageEvent]:
+        with self._lock:
+            return list(self._events)
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    @property
+    def size(self) -> int:
+        with self._lock:
+            return len(self._events)
+
+
 @dataclass
 class IngestionFailureEvent:
     """Structured failure event from ingestion stages."""
@@ -204,24 +256,51 @@ class IngestionFailureReport:
         self.events.append(event)
 
 
-@dataclass
-class QueuePressureSample:
-    """Snapshot of queue pressure and worker count."""
+@dataclass(frozen=True)
+class StagePressureSample:
+    """Snapshot of queue pressure and worker count for a stage."""
 
     timestamp_s: float
-    entry_depth_ratio: float
-    output_depth_ratio: float
+    stage: str
+    depth_ratio: float
     worker_count: int
     inflight_tasks: int
 
 
-@dataclass
-class LatencySample:
+@dataclass(frozen=True)
+class StageLatencySample:
     """Latency snapshot for decode and queue wait."""
 
     timestamp_s: float
+    stage: str
     decode_s: float
     queue_wait_s: float
+
+
+@dataclass
+class StageTelemetry:
+    """Per-stage telemetry samples for the ingestion control plane."""
+
+    window: int
+    samples: Deque[StagePressureSample] = field(default_factory=deque)
+    latencies: Deque[StageLatencySample] = field(default_factory=deque)
+    worker_scale_ups: int = 0
+    worker_scale_downs: int = 0
+    queue_scale_ups: int = 0
+    queue_scale_downs: int = 0
+    backpressure_events: int = 0
+    circuit_breaker_opens: int = 0
+    state_transitions: int = 0
+
+    def record_sample(self, sample: StagePressureSample) -> None:
+        if len(self.samples) >= self.window:
+            self.samples.popleft()
+        self.samples.append(sample)
+
+    def record_latency(self, latency: StageLatencySample) -> None:
+        if len(self.latencies) >= self.window:
+            self.latencies.popleft()
+        self.latencies.append(latency)
 
 
 @dataclass
@@ -229,24 +308,30 @@ class IngestionTelemetry:
     """Telemetry samples for queue pressure, worker sizing, and latency."""
 
     window: int = 256
-    samples: Deque[QueuePressureSample] = field(default_factory=deque)
-    latencies: Deque[LatencySample] = field(default_factory=deque)
-    worker_scale_ups: int = 0
-    worker_scale_downs: int = 0
-    queue_scale_ups: int = 0
-    queue_scale_downs: int = 0
+    stages: dict[str, StageTelemetry] = field(default_factory=dict)
+    event_log: DeterministicEventLog = field(default_factory=DeterministicEventLog)
     forced_flushes: int = 0
-    circuit_breaker_opens: int = 0
 
-    def record_sample(self, sample: QueuePressureSample) -> None:
-        if len(self.samples) >= self.window:
-            self.samples.popleft()
-        self.samples.append(sample)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
-    def record_latency(self, latency: LatencySample) -> None:
-        if len(self.latencies) >= self.window:
-            self.latencies.popleft()
-        self.latencies.append(latency)
+    def stage_metrics(self, stage: str) -> StageTelemetry:
+        with self._lock:
+            metrics = self.stages.get(stage)
+            if metrics is None:
+                metrics = StageTelemetry(window=self.window)
+                self.stages[stage] = metrics
+            return metrics
+
+    def record_stage_sample(self, sample: StagePressureSample) -> None:
+        metrics = self.stage_metrics(sample.stage)
+        metrics.record_sample(sample)
+
+    def record_stage_latency(self, latency: StageLatencySample) -> None:
+        metrics = self.stage_metrics(latency.stage)
+        metrics.record_latency(latency)
+
+    def record_event(self, event: StageEvent) -> None:
+        self.event_log.record(event)
 
 
 class CircuitBreaker:
@@ -307,11 +392,16 @@ class DeterministicReorderBuffer:
         self._heap: list[tuple[int, int, object]] = []
         self._forced_flushes = 0
         self._counter = 0
+        self._seen: set[int] = set()
 
     def push(self, decoded: object) -> None:
         import heapq
 
-        heapq.heappush(self._heap, (decoded.seq_id, self._counter, decoded))
+        seq_id = int(getattr(decoded, "seq_id"))
+        if seq_id in self._seen:
+            return
+        self._seen.add(seq_id)
+        heapq.heappush(self._heap, (seq_id, self._counter, decoded))
         self._counter += 1
 
     def pop_ready(self, expected_seq: int) -> tuple[list[object], int]:
@@ -319,7 +409,8 @@ class DeterministicReorderBuffer:
 
         ready: list[object] = []
         while self._heap and self._heap[0][0] == expected_seq:
-            _, _, decoded = heapq.heappop(self._heap)
+            seq_id, _, decoded = heapq.heappop(self._heap)
+            self._seen.discard(seq_id)
             ready.append(decoded)
             expected_seq += 1
         if len(self._heap) >= self._config.max_pending:
@@ -327,9 +418,10 @@ class DeterministicReorderBuffer:
             for _ in range(forced):
                 if not self._heap:
                     break
-                _, _, decoded = heapq.heappop(self._heap)
+                seq_id, _, decoded = heapq.heappop(self._heap)
+                self._seen.discard(seq_id)
                 ready.append(decoded)
-                expected_seq = max(expected_seq, decoded.seq_id + 1)
+                expected_seq = max(expected_seq, seq_id + 1)
                 self._forced_flushes += 1
         return ready, expected_seq
 
@@ -407,94 +499,156 @@ class MovingAverage:
         return self._value
 
 
-class ControlPlaneSupervisor:
-    """Supervisor orchestrating queue tuning and worker scaling."""
+class StageSupervisor:
+    """Stage-level supervisor orchestrating queue tuning and worker scaling."""
 
     def __init__(
         self,
         *,
-        entry_queue: AdaptiveBoundedQueue[object],
-        output_queue: AdaptiveBoundedQueue[object],
-        worker_pool: DynamicWorkerPool,
-        entry_tuning: QueueTuningConfig,
-        output_tuning: QueueTuningConfig,
-        worker_config: WorkerPoolConfig,
+        stage: str,
+        queue: AdaptiveBoundedQueue[object],
+        tuning: QueueTuningConfig,
         telemetry: IngestionTelemetry,
-        spawn_worker: Callable[[], None],
-        retire_worker: Callable[[], None],
-        inflight_count: Callable[[], int],
-        stop_event: threading.Event,
-        producer_done: threading.Event,
+        interval_s: float,
+        worker_pool: DynamicWorkerPool | None = None,
+        worker_config: WorkerPoolConfig | None = None,
+        spawn_worker: Callable[[], None] | None = None,
+        retire_worker: Callable[[], None] | None = None,
+        inflight_count: Callable[[], int] | None = None,
         ema_alpha: float = 0.25,
     ) -> None:
-        self._entry_queue = entry_queue
-        self._output_queue = output_queue
-        self._worker_pool = worker_pool
-        self._entry_tuning = entry_tuning
-        self._output_tuning = output_tuning
-        self._worker_config = worker_config
+        if interval_s <= 0:
+            raise ValueError("interval_s must be positive")
+        self._stage = stage
+        self._queue = queue
+        self._tuning = tuning
         self._telemetry = telemetry
+        self._interval_s = interval_s
+        self._worker_pool = worker_pool
+        self._worker_config = worker_config
         self._spawn_worker = spawn_worker
         self._retire_worker = retire_worker
-        self._inflight_count = inflight_count
+        self._inflight_count = inflight_count or (lambda: 0)
+        self._ema = MovingAverage(ema_alpha)
+        self._last_tick_s = 0.0
+
+    @property
+    def interval_s(self) -> float:
+        return self._interval_s
+
+    def tick(self, now_s: float) -> None:
+        if (now_s - self._last_tick_s) < self._interval_s:
+            return
+        self._last_tick_s = now_s
+        depth_ratio = self._queue.depth_ratio
+        inflight = self._inflight_count()
+        worker_count = self._worker_pool.active_workers if self._worker_pool else 0
+        self._telemetry.record_stage_sample(
+            StagePressureSample(
+                timestamp_s=time.time(),
+                stage=self._stage,
+                depth_ratio=depth_ratio,
+                worker_count=worker_count,
+                inflight_tasks=inflight,
+            )
+        )
+        smoothed = self._ema.update(depth_ratio)
+        self._tune_queue(smoothed)
+        self._tune_workers(smoothed)
+
+    def _tune_queue(self, depth_ratio: float) -> None:
+        if depth_ratio >= self._tuning.scale_up_ratio and self._queue.capacity < self._tuning.max_capacity:
+            new_capacity = min(self._queue.capacity + self._tuning.scale_step, self._tuning.max_capacity)
+            self._queue.resize(new_capacity)
+            self._telemetry.stage_metrics(self._stage).queue_scale_ups += 1
+            self._telemetry.record_event(
+                StageEvent(
+                    stage=self._stage,
+                    event_type="queue_scale_up",
+                    message="Scaled queue up",
+                    metadata={"capacity": new_capacity},
+                )
+            )
+            return
+        if depth_ratio <= self._tuning.scale_down_ratio and self._queue.capacity > self._tuning.min_capacity:
+            new_capacity = max(self._queue.capacity - self._tuning.scale_step, self._tuning.min_capacity)
+            self._queue.resize(new_capacity)
+            self._telemetry.stage_metrics(self._stage).queue_scale_downs += 1
+            self._telemetry.record_event(
+                StageEvent(
+                    stage=self._stage,
+                    event_type="queue_scale_down",
+                    message="Scaled queue down",
+                    metadata={"capacity": new_capacity},
+                )
+            )
+
+    def _tune_workers(self, depth_ratio: float) -> None:
+        if not self._worker_pool or not self._worker_config:
+            return
+        if not self._spawn_worker or not self._retire_worker:
+            return
+        if (
+            depth_ratio >= self._worker_config.scale_up_ratio
+            and self._worker_pool.active_workers < self._worker_pool.max_workers
+        ):
+            self._spawn_worker()
+            self._telemetry.stage_metrics(self._stage).worker_scale_ups += 1
+            self._telemetry.record_event(
+                StageEvent(
+                    stage=self._stage,
+                    event_type="worker_scale_up",
+                    message="Scaled workers up",
+                    metadata={"workers": self._worker_pool.active_workers},
+                )
+            )
+            return
+        if depth_ratio <= self._worker_config.scale_down_ratio and self._worker_pool.active_workers > self._worker_pool.min_workers:
+            self._retire_worker()
+            self._telemetry.stage_metrics(self._stage).worker_scale_downs += 1
+            self._telemetry.record_event(
+                StageEvent(
+                    stage=self._stage,
+                    event_type="worker_scale_down",
+                    message="Scaled workers down",
+                    metadata={"workers": self._worker_pool.active_workers},
+                )
+            )
+
+
+class ControlPlaneOrchestrator:
+    """Orchestrates multiple stage supervisors with deterministic cadence."""
+
+    def __init__(
+        self,
+        *,
+        supervisors: Iterable[StageSupervisor],
+        stop_event: threading.Event,
+        producer_done: threading.Event,
+        drain_condition: Callable[[], bool] | None = None,
+    ) -> None:
+        self._supervisors = list(supervisors)
+        if not self._supervisors:
+            raise ValueError("At least one supervisor is required")
         self._stop_event = stop_event
         self._producer_done = producer_done
-        self._entry_ema = MovingAverage(ema_alpha)
-        self._output_ema = MovingAverage(ema_alpha)
+        self._drain_condition = drain_condition
+        self._min_interval_s = min(s.interval_s for s in self._supervisors)
 
     def run(self) -> None:
         try:
             while not self._stop_event.is_set():
-                time.sleep(self._worker_config.supervisor_interval_s)
-                entry_ratio = self._entry_queue.depth_ratio
-                output_ratio = self._output_queue.depth_ratio
-                inflight = self._inflight_count()
-                self._telemetry.record_sample(
-                    QueuePressureSample(
-                        timestamp_s=time.time(),
-                        entry_depth_ratio=entry_ratio,
-                        output_depth_ratio=output_ratio,
-                        worker_count=self._worker_pool.active_workers,
-                        inflight_tasks=inflight,
-                    )
-                )
-                entry_smoothed = self._entry_ema.update(entry_ratio)
-                output_smoothed = self._output_ema.update(output_ratio)
-                self._tune_queue(self._entry_queue, self._entry_tuning, entry_smoothed)
-                self._tune_queue(self._output_queue, self._output_tuning, output_smoothed)
-                self._tune_workers(entry_smoothed)
-                if self._producer_done.is_set() and self._entry_queue.size == 0:
+                now_s = time.perf_counter()
+                for supervisor in self._supervisors:
+                    supervisor.tick(now_s)
+                if self._producer_done.is_set() and self._drain_condition and self._drain_condition():
                     break
+                time.sleep(self._min_interval_s / 2.0)
         except Exception as exc:  # pragma: no cover - supervisor failure
-            LOGGER.exception("Control-plane supervisor failed")
+            LOGGER.exception("Control-plane orchestrator failed")
             raise exc
         finally:
-            LOGGER.info("Control-plane supervisor exiting")
-
-    def _tune_queue(
-        self,
-        queue: AdaptiveBoundedQueue[object],
-        tuning: QueueTuningConfig,
-        depth_ratio: float,
-    ) -> None:
-        if depth_ratio >= tuning.scale_up_ratio and queue.capacity < tuning.max_capacity:
-            new_capacity = min(queue.capacity + tuning.scale_step, tuning.max_capacity)
-            queue.resize(new_capacity)
-            self._telemetry.queue_scale_ups += 1
-            return
-        if depth_ratio <= tuning.scale_down_ratio and queue.capacity > tuning.min_capacity:
-            new_capacity = max(queue.capacity - tuning.scale_step, tuning.min_capacity)
-            queue.resize(new_capacity)
-            self._telemetry.queue_scale_downs += 1
-
-    def _tune_workers(self, entry_ratio: float) -> None:
-        if entry_ratio >= self._worker_config.scale_up_ratio and self._worker_pool.active_workers < self._worker_config.max_workers:
-            self._spawn_worker()
-            self._telemetry.worker_scale_ups += 1
-            return
-        if entry_ratio <= self._worker_config.scale_down_ratio:
-            self._retire_worker()
-            self._telemetry.worker_scale_downs += 1
+            LOGGER.info("Control-plane orchestrator exiting")
 
 
 __all__ = [
@@ -502,19 +656,23 @@ __all__ = [
     "BackpressureTimeout",
     "CircuitBreaker",
     "CircuitBreakerConfig",
-    "ControlPlaneSupervisor",
+    "ControlPlaneOrchestrator",
+    "DeterministicEventLog",
+    "DeterministicReorderBuffer",
     "DynamicWorkerPool",
     "IngestionClosed",
     "IngestionFailureEvent",
     "IngestionFailureReport",
     "IngestionTelemetry",
-    "LatencySample",
     "MovingAverage",
     "OrderingBufferConfig",
     "QueueLike",
-    "QueuePressureSample",
     "QueueTuningConfig",
     "RetryPolicyConfig",
+    "StageEvent",
+    "StageLatencySample",
+    "StagePressureSample",
+    "StageState",
+    "StageSupervisor",
     "WorkerPoolConfig",
-    "DeterministicReorderBuffer",
 ]
