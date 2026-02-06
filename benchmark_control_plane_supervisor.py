@@ -45,12 +45,19 @@ def run_benchmark(frame_count: int = 1000) -> None:
     memory_stats = end_snapshot.compare_to(start_snapshot, "lineno")
     total_memory_delta = sum(stat.size_diff for stat in memory_stats)
 
+    entry_metrics = pipeline.telemetry.stage_metrics("entry")
+    decode_metrics = pipeline.telemetry.stage_metrics("decode")
+    output_metrics = pipeline.telemetry.stage_metrics("output")
+
     print("control_plane_benchmark")
     print(f"frames={frame_count}")
     print(f"duration_s={duration_s:.4f}")
     print(f"memory_delta_bytes={total_memory_delta}")
     print(f"throughput_fps={frame_count / duration_s:.2f}")
     print(f"ordered={results == list(range(frame_count))}")
+    print(f"entry_scale_ups={entry_metrics.queue_scale_ups}")
+    print(f"decode_circuit_opens={decode_metrics.circuit_breaker_opens}")
+    print(f"output_backpressure={output_metrics.backpressure_events}")
 
 
 if __name__ == "__main__":

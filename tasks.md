@@ -1,33 +1,38 @@
-# Strategic Roadmap (Senior-Grade)
+# Strategic Roadmap (Executive-Level Milestones)
 
-## Phase A: Graph Optimization 2.0 (Accuracy-First)
-- Ship pluggable SE(2)/SE(3)/Sim(3) solvers with deterministic snapshots and
-  CI gates on ATE/RPE drift.
-- Add robust loss registry with dataset-specific tuning profiles and solver
-  telemetry exports (residual norms, conditioning alerts).
-- Integrate sparse backends and C++ hooks for latency-critical optimization.
+## Milestone 1: Control-Plane Orchestration 3.0
+- Ship stage-level supervisors with deterministic cadence, per-stage telemetry,
+  and explicit backpressure event logs consumed by CI gates.
+- Add race-condition stress harnesses and deterministic ordering verification
+  under peak ingestion load.
+- Publish latency SLOs with regression thresholds for entry/decode/output
+  stages and automated gate failures.
 
-## Phase B: Control-Plane Orchestration 3.0
-- Stage-level supervisors with circuit breakers, deterministic ordering buffers,
-  and explicit backpressure telemetry in CI artifacts.
-- Async pipeline stress harness with race-condition diagnostics and latency
-  regression thresholds.
+## Milestone 2: Graph Optimization 2.0
+- Expand solver registry to include sparse backends with deterministic solver
+  snapshots captured per run.
+- Add robust-loss profiles per dataset (KITTI/TUM) with gating thresholds on
+  residual distribution drift.
+- Provide C++ hooks and solver parity tests for latency-critical optimization.
 
-## Phase C: Calibration Drift Automation
-- Automated intrinsics/baseline delta gates with retained diagnostics artifacts
-  (plots + JSON) per sequence.
-- Replayable drift analysis tooling with CI gating thresholds.
+## Milestone 3: Calibration Drift Automation
+- Build intrinsics/baseline drift detectors with retained JSON + plot artifacts
+  for every benchmark sequence.
+- Gate CI on calibration deltas, with auto-generated remediation reports.
 
-## Phase D: Relocalization Resilience Suite
-- Multi-injection benchmark pack with confidence intervals, recovery latency,
-  and robustness scoring.
-- Deterministic re-entry buffers and failure isolation metrics tied to telemetry
-  exports.
+## Milestone 4: Relocalization Resilience Suite
+- Create multi-injection benchmark pack with confidence intervals and
+  recovery-latency scoring.
+- Add deterministic relocalization buffers and failure-isolation metrics.
 
-## Phase E: Telemetry Intelligence Layer
-- Cross-run latency drift comparison dashboards (CSV/JSON exports).
-- Stage-level SLO summaries for ingestion, tracking, and optimization.
+## Milestone 5: Telemetry Intelligence Layer
+- Implement cross-run telemetry diffing (CSV/JSON export) and CI regression
+  dashboards.
+- Provide stage-level SLO summaries for ingestion, tracking, and optimization,
+  with threshold tuning workflows.
 
-## Phase F: Multi-Sensor Expansion Blueprint
-- IMU/GPS fusion interfaces with deterministic synchronization and C++ hook
-  scaffolding for latency-critical tracking/optimization.
+## Milestone 6: Multi-Sensor Expansion Blueprint
+- Define IMU/GPS fusion interfaces with deterministic synchronization and
+  extensible configs.
+- Deliver C++ hook scaffolding for latency-critical tracking/optimization
+  integration.

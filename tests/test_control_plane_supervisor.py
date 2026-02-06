@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
-import threading
+import sys
 import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 
 from ingestion_control_plane import (
     AdaptiveBoundedQueue,
     CircuitBreaker,
     CircuitBreakerConfig,
-    ControlPlaneSupervisor,
+    DeterministicEventLog,
     DynamicWorkerPool,
     IngestionTelemetry,
     MovingAverage,
     QueueTuningConfig,
+    StageSupervisor,
     WorkerPoolConfig,
 )
 
@@ -39,10 +45,9 @@ def test_circuit_breaker_state_transitions() -> None:
     assert breaker.state == "closed"
 
 
-def test_control_plane_scales_queue_and_workers() -> None:
+def test_stage_supervisor_scales_queue_and_workers() -> None:
     entry_queue: AdaptiveBoundedQueue[int] = AdaptiveBoundedQueue(capacity=4, min_capacity=2, max_capacity=6)
-    output_queue: AdaptiveBoundedQueue[int] = AdaptiveBoundedQueue(capacity=4, min_capacity=2, max_capacity=6)
-    telemetry = IngestionTelemetry(window=32)
+    telemetry = IngestionTelemetry(window=32, event_log=DeterministicEventLog(capacity=32))
     worker_pool = DynamicWorkerPool(min_workers=1, max_workers=2)
     worker_pool.register_spawn()
 
@@ -59,34 +64,27 @@ def test_control_plane_scales_queue_and_workers() -> None:
         retire_count += 1
         worker_pool.register_exit()
 
-    stop_event = threading.Event()
-    producer_done = threading.Event()
-
-    supervisor = ControlPlaneSupervisor(
-        entry_queue=entry_queue,
-        output_queue=output_queue,
-        worker_pool=worker_pool,
-        entry_tuning=QueueTuningConfig(min_capacity=2, max_capacity=6, scale_up_ratio=0.6, scale_down_ratio=0.2, scale_step=1),
-        output_tuning=QueueTuningConfig(min_capacity=2, max_capacity=6, scale_up_ratio=0.6, scale_down_ratio=0.2, scale_step=1),
-        worker_config=WorkerPoolConfig(min_workers=1, max_workers=2, scale_up_ratio=0.5, scale_down_ratio=0.1, supervisor_interval_s=0.01),
+    supervisor = StageSupervisor(
+        stage="entry",
+        queue=entry_queue,
+        tuning=QueueTuningConfig(min_capacity=2, max_capacity=6, scale_up_ratio=0.6, scale_down_ratio=0.2, scale_step=1),
         telemetry=telemetry,
+        interval_s=0.01,
+        worker_pool=worker_pool,
+        worker_config=WorkerPoolConfig(min_workers=1, max_workers=2, scale_up_ratio=0.5, scale_down_ratio=0.1, supervisor_interval_s=0.01),
         spawn_worker=_spawn,
         retire_worker=_retire,
         inflight_count=lambda: 0,
-        stop_event=stop_event,
-        producer_done=producer_done,
         ema_alpha=0.5,
     )
 
     for idx in range(4):
         entry_queue.put(idx)
 
-    thread = threading.Thread(target=supervisor.run, daemon=True)
-    thread.start()
-    time.sleep(0.05)
-    stop_event.set()
-    thread.join(timeout=1.0)
+    supervisor.tick(time.perf_counter() + 1.0)
 
-    assert telemetry.queue_scale_ups >= 1
+    assert telemetry.stage_metrics("entry").queue_scale_ups >= 1
     assert spawn_count >= 1
-    assert entry_queue.capacity >= 4
+    assert entry_queue.capacity >= 5
+    assert telemetry.event_log.size >= 1
+    assert retire_count == 0
