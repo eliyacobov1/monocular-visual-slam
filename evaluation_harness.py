@@ -8,7 +8,6 @@ import hashlib
 import json
 import logging
 import random
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,9 +18,7 @@ import numpy as np
 from experiment_registry import create_run_artifacts, write_resolved_config
 from regression_baselines import compare_metrics, load_baseline_store, upsert_baseline
 from data_persistence import (
-    P2Quantile,
     frame_diagnostics_artifact_path,
-    iter_json_array_items,
     load_trajectory_npz,
     load_frame_diagnostics_json,
     summarize_frame_diagnostics,
@@ -37,6 +34,17 @@ from evaluate_trajectory import (
     write_csv_report,
     write_json_report,
     write_report,
+)
+from telemetry_intelligence import (
+    TelemetryDigest,
+    TelemetryDriftThresholds,
+    compare_telemetry_summaries,
+    load_telemetry_events,
+    load_telemetry_summary,
+    summarize_telemetry_events,
+    summarize_telemetry_streaming,
+    telemetry_metrics_from_summary,
+    write_telemetry_summary,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -76,6 +84,10 @@ class EvaluationConfig:
     telemetry_baseline_key: str | None
     telemetry_baseline_thresholds: dict[str, float | dict[str, Any]] | None
     write_telemetry_baseline: bool
+    telemetry_drift_baseline_path: Path | None
+    telemetry_drift_thresholds: dict[str, Any] | None
+    telemetry_drift_report_name: str
+    write_telemetry_drift_baseline: bool
     relocalization_baseline_key: str | None
     relocalization_baseline_thresholds: dict[str, float | dict[str, Any]] | None
     write_relocalization_baseline: bool
@@ -269,9 +281,15 @@ def load_config(config_path: Path) -> EvaluationConfig:
     telemetry_config = baseline_config.get("telemetry", {}) if baseline_config else {}
     telemetry_baseline_key = telemetry_config.get("key") if telemetry_config else None
     telemetry_baseline_thresholds = telemetry_config.get("thresholds") if telemetry_config else None
-    write_telemetry_baseline = (
-        bool(telemetry_config.get("write", False)) if telemetry_config else False
+    write_telemetry_baseline = bool(telemetry_config.get("write", False)) if telemetry_config else False
+    telemetry_drift_config = telemetry_config.get("drift", {}) if telemetry_config else {}
+    telemetry_drift_baseline = telemetry_drift_config.get("baseline_path") if telemetry_drift_config else None
+    telemetry_drift_thresholds = telemetry_drift_config.get("thresholds") if telemetry_drift_config else None
+    telemetry_drift_report_name = telemetry_drift_config.get(
+        "report_name",
+        "telemetry_drift_report.json",
     )
+    write_telemetry_drift_baseline = bool(telemetry_drift_config.get("write", False)) if telemetry_drift_config else False
     if telemetry_baseline_thresholds and telemetry_baseline_key is None and baseline_key:
         telemetry_baseline_key = f"{baseline_key}_telemetry"
     relocalization_config = baseline_config.get("relocalization", {}) if baseline_config else {}
@@ -309,6 +327,12 @@ def load_config(config_path: Path) -> EvaluationConfig:
         telemetry_baseline_key=str(telemetry_baseline_key) if telemetry_baseline_key else None,
         telemetry_baseline_thresholds=telemetry_baseline_thresholds,
         write_telemetry_baseline=write_telemetry_baseline,
+        telemetry_drift_baseline_path=_resolve_path(telemetry_drift_baseline, base_dir)
+        if telemetry_drift_baseline
+        else None,
+        telemetry_drift_thresholds=telemetry_drift_thresholds,
+        telemetry_drift_report_name=str(telemetry_drift_report_name),
+        write_telemetry_drift_baseline=write_telemetry_drift_baseline,
         relocalization_baseline_key=str(relocalization_baseline_key)
         if relocalization_baseline_key
         else None,
@@ -380,11 +404,7 @@ def _aggregate_metrics(per_sequence: dict[str, dict[str, float]]) -> dict[str, f
 
 
 def _load_telemetry_events(path: Path) -> list[dict[str, Any]]:
-    payload = _load_json(path)
-    events = payload.get("events", [])
-    if not isinstance(events, list):
-        raise ValueError(f"Telemetry payload at {path} is missing 'events' list")
-    return events
+    return load_telemetry_events(path)
 
 
 def _load_relocalization_report(path: Path) -> dict[str, Any]:
@@ -408,137 +428,19 @@ def _relocalization_metrics_from_report(report: dict[str, Any]) -> dict[str, flo
     }
 
 
-class _TelemetryStageStats:
-    def __init__(self) -> None:
-        self.count = 0
-        self.total_duration = 0.0
-        self.min_duration = float("inf")
-        self.max_duration = float("-inf")
-        self.p95 = P2Quantile(0.95)
-
-    def update(self, duration: float) -> None:
-        self.count += 1
-        self.total_duration += duration
-        self.min_duration = min(self.min_duration, duration)
-        self.max_duration = max(self.max_duration, duration)
-        self.p95.update(duration)
-
-    def summary(self) -> dict[str, float | int]:
-        if self.count == 0:
-            return {
-                "count": 0,
-                "total_duration_s": 0.0,
-                "mean_duration_s": 0.0,
-                "min_duration_s": 0.0,
-                "max_duration_s": 0.0,
-                "p95_duration_s": 0.0,
-            }
-        return {
-            "count": int(self.count),
-            "total_duration_s": float(self.total_duration),
-            "mean_duration_s": float(self.total_duration / self.count),
-            "min_duration_s": float(self.min_duration),
-            "max_duration_s": float(self.max_duration),
-            "p95_duration_s": float(self.p95.value()),
-        }
-
-
-class _TelemetryAccumulator:
-    def __init__(self) -> None:
-        self.total_events = 0
-        self.total_duration = 0.0
-        self.per_stage: dict[str, _TelemetryStageStats] = {}
-
-    def update(self, name: str, duration: float) -> None:
-        self.total_events += 1
-        self.total_duration += duration
-        stats = self.per_stage.get(name)
-        if stats is None:
-            stats = _TelemetryStageStats()
-            self.per_stage[name] = stats
-        stats.update(duration)
-
-    def summarize(self) -> dict[str, Any]:
-        per_stage = {name: stats.summary() for name, stats in self.per_stage.items()}
-        mean_duration = self.total_duration / self.total_events if self.total_events else 0.0
-        return {
-            "event_count": int(self.total_events),
-            "total_duration_s": float(self.total_duration),
-            "mean_duration_s": float(mean_duration),
-            "per_stage": per_stage,
-        }
-
-
-def _normalize_metric_name(value: str) -> str:
-    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower())
-    return normalized.strip("_") or "unknown"
-
-
 def _telemetry_metrics_from_summary(summary: dict[str, Any]) -> dict[str, float]:
-    if not summary:
-        return {}
-    metrics: dict[str, float] = {
-        "telemetry_event_count": float(summary.get("event_count", 0.0)),
-        "telemetry_total_duration_s": float(summary.get("total_duration_s", 0.0)),
-        "telemetry_mean_duration_s": float(summary.get("mean_duration_s", 0.0)),
-    }
-    per_stage = summary.get("per_stage", {})
-    if isinstance(per_stage, dict):
-        for stage, stats in per_stage.items():
-            prefix = f"telemetry_stage_{_normalize_metric_name(str(stage))}"
-            metrics[f"{prefix}_count"] = float(stats.get("count", 0.0))
-            metrics[f"{prefix}_mean_duration_s"] = float(stats.get("mean_duration_s", 0.0))
-            metrics[f"{prefix}_p95_duration_s"] = float(stats.get("p95_duration_s", 0.0))
-            metrics[f"{prefix}_max_duration_s"] = float(stats.get("max_duration_s", 0.0))
-    return metrics
+    return telemetry_metrics_from_summary(summary)
 
 
 def _summarize_telemetry_streaming(
     path: Path,
-    global_accumulator: _TelemetryAccumulator | None = None,
+    global_accumulator: TelemetryDigest | None = None,
 ) -> dict[str, Any]:
-    local_accumulator = _TelemetryAccumulator()
-    for event in iter_json_array_items(path, "events"):
-        name = str(event.get("name") or "unknown")
-        duration = float(event.get("duration_s", 0.0))
-        local_accumulator.update(name, duration)
-        if global_accumulator is not None:
-            global_accumulator.update(name, duration)
-    return local_accumulator.summarize()
+    return summarize_telemetry_streaming(path, global_digest=global_accumulator)
 
 
 def _summarize_telemetry_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    durations: dict[str, list[float]] = {}
-    total_events = 0
-    total_duration = 0.0
-    for event in events:
-        name = str(event.get("name", "unknown"))
-        duration = float(event.get("duration_s", 0.0))
-        durations.setdefault(name, []).append(duration)
-        total_events += 1
-        total_duration += duration
-
-    per_stage: dict[str, dict[str, float]] = {}
-    for name, values in durations.items():
-        arr = np.array(values, dtype=np.float64)
-        if arr.size == 0:
-            continue
-        per_stage[name] = {
-            "count": int(arr.size),
-            "total_duration_s": float(np.sum(arr)),
-            "mean_duration_s": float(np.mean(arr)),
-            "min_duration_s": float(np.min(arr)),
-            "max_duration_s": float(np.max(arr)),
-            "p95_duration_s": float(np.percentile(arr, 95)),
-        }
-
-    mean_duration = total_duration / total_events if total_events > 0 else 0.0
-    return {
-        "event_count": total_events,
-        "total_duration_s": float(total_duration),
-        "mean_duration_s": float(mean_duration),
-        "per_stage": per_stage,
-    }
+    return summarize_telemetry_events(events)
 
 
 def _resolve_telemetry_path(run_dir: Path, telemetry_name: str) -> Path:
@@ -576,7 +478,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
     per_sequence_reports: dict[str, dict[str, Any]] = {}
     per_sequence_telemetry: dict[str, dict[str, Any]] = {}
     per_sequence_relocalization_metrics: dict[str, dict[str, float]] = {}
-    telemetry_accumulator = _TelemetryAccumulator()
+    telemetry_accumulator = TelemetryDigest()
 
     LOGGER.info("Starting evaluation run %s", config.run_id)
     for entry in config.trajectories:
@@ -598,10 +500,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
                     )
                     events = _load_telemetry_events(telemetry_path)
                     per_sequence_telemetry[entry.name] = _summarize_telemetry_events(events)
-                    for event in events:
-                        name = str(event.get("name") or "unknown")
-                        duration = float(event.get("duration_s", 0.0))
-                        telemetry_accumulator.update(name, duration)
+                    telemetry_accumulator.ingest_events(events)
             else:
                 LOGGER.warning("Telemetry file not found for %s at %s", entry.name, telemetry_path)
             diagnostics_path = _resolve_diagnostics_path(entry.est_run_dir, "frame_diagnostics")
@@ -663,6 +562,47 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
     relocalization_metrics = _aggregate_metrics(per_sequence_relocalization_metrics)
     telemetry_summary = telemetry_accumulator.summarize() if telemetry_accumulator.total_events else {}
     telemetry_metrics = _telemetry_metrics_from_summary(telemetry_summary)
+    telemetry_drift_report = None
+    if telemetry_summary and config.telemetry_drift_baseline_path:
+        try:
+            baseline_summary = load_telemetry_summary(config.telemetry_drift_baseline_path)
+            thresholds = TelemetryDriftThresholds(
+                relative_increase=float(
+                    config.telemetry_drift_thresholds.get("relative_increase", 0.1)
+                    if config.telemetry_drift_thresholds
+                    else 0.1
+                ),
+                absolute_increase_s=float(
+                    config.telemetry_drift_thresholds.get("absolute_increase_s", 0.01)
+                    if config.telemetry_drift_thresholds
+                    else 0.01
+                ),
+                metrics=tuple(
+                    config.telemetry_drift_thresholds.get("metrics", ("mean_duration_s", "p95_duration_s"))
+                    if config.telemetry_drift_thresholds
+                    else ("mean_duration_s", "p95_duration_s")
+                ),
+            )
+            telemetry_drift_report = compare_telemetry_summaries(
+                telemetry_summary,
+                baseline_summary,
+                thresholds,
+            )
+            write_telemetry_summary(
+                output_dir / config.telemetry_drift_report_name,
+                telemetry_drift_report,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOGGER.warning("Failed to evaluate telemetry drift (%s)", exc)
+    if telemetry_summary and config.telemetry_drift_baseline_path and config.write_telemetry_drift_baseline:
+        try:
+            write_telemetry_summary(config.telemetry_drift_baseline_path, telemetry_summary)
+            LOGGER.info(
+                "Telemetry drift baseline updated at %s",
+                config.telemetry_drift_baseline_path,
+            )
+        except OSError as exc:
+            LOGGER.warning("Failed to write telemetry drift baseline (%s)", exc)
     summary = {
         "run_id": config.run_id,
         "dataset": config.dataset,
@@ -680,6 +620,7 @@ def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
         "telemetry_summary": telemetry_summary,
         "telemetry_metrics": telemetry_metrics,
         "telemetry_per_sequence": per_sequence_telemetry,
+        "telemetry_drift_report": telemetry_drift_report,
         "relocalization_per_sequence": per_sequence_relocalization_metrics,
         "per_sequence": per_sequence_reports,
     }
