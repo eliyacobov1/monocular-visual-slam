@@ -333,6 +333,11 @@ class IngestionTelemetry:
     def record_event(self, event: StageEvent) -> None:
         self.event_log.record(event)
 
+    @property
+    def circuit_breaker_opens(self) -> int:
+        with self._lock:
+            return int(sum(stage.circuit_breaker_opens for stage in self.stages.values()))
+
 
 class CircuitBreaker:
     """Simple circuit breaker for decode stage isolation."""

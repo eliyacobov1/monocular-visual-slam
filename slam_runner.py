@@ -21,6 +21,7 @@ from ingestion_pipeline import (
     IngestionPipelineConfig,
     RetryPolicyConfig,
 )
+from feature_control_plane import FeatureControlConfig
 from feature_pipeline import FeaturePipelineConfig
 from kitti_dataset import KittiSequence
 from robust_pose_estimator import RobustPoseEstimatorConfig
@@ -41,17 +42,25 @@ def _filter_config(payload: dict[str, Any], config_type: type) -> dict[str, Any]
     return {key: payload[key] for key in payload if key in allowed}
 
 
-def load_pipeline_config(path: Path) -> tuple[FeaturePipelineConfig, RobustPoseEstimatorConfig]:
+def load_pipeline_config(
+    path: Path,
+) -> tuple[FeaturePipelineConfig, RobustPoseEstimatorConfig, FeatureControlConfig | None]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     feature_payload = payload.get("feature_config", payload.get("feature", {}))
     pose_payload = payload.get("pose_config", payload.get("pose", {}))
+    feature_control_payload = payload.get("feature_control")
     feature_config = FeaturePipelineConfig(
         **_filter_config(feature_payload, FeaturePipelineConfig)
     )
     pose_config = RobustPoseEstimatorConfig(
         **_filter_config(pose_payload, RobustPoseEstimatorConfig)
     )
-    return feature_config, pose_config
+    feature_control_config = None
+    if feature_control_payload is not None:
+        feature_control_config = FeatureControlConfig(
+            **_filter_config(feature_control_payload, FeatureControlConfig)
+        )
+    return feature_config, pose_config, feature_control_config
 
 
 def run_kitti_sequence(
@@ -91,7 +100,7 @@ def run_kitti_sequence(
     if validation.has_warnings:
         LOGGER.warning("Dataset validation completed with warnings")
 
-    feature_config, pose_config = load_pipeline_config(config_path)
+    feature_config, pose_config, feature_control_config = load_pipeline_config(config_path)
     config_hash = _hash_config(config_path)
 
     sequence_loader = KittiSequence(root, sequence, camera=camera)
@@ -114,6 +123,7 @@ def run_kitti_sequence(
         intrinsics=intrinsics,
         feature_config=feature_config,
         pose_config=pose_config,
+        feature_control=feature_control_config,
         use_run_subdir=use_run_subdir,
     )
     num_frames = len(frame_entries)

@@ -1,35 +1,30 @@
-# Strategic Roadmap (Principal Engineer Milestones)
+# Strategic Roadmap (Principal-Grade SLAM Platform)
 
-## Milestone 1: Optimization Control Plane + Solver Telemetry
-- Deterministic optimization supervisor with retry policies, loss-scale escalation, and damping envelopes.
-- Per-iteration telemetry summaries (mean/std/quantiles) exported for CI regression gating.
-- Snapshot-aware run reports with audit-ready event logs and solver digest metadata.
+## Milestone A: Feature Control Plane (Async + Deterministic)
+- Deterministic, ordered feature extraction with bounded concurrency and caching.
+- Structured event logs + telemetry summaries for feature latency and cache hits.
+- CI benchmarks for feature extraction throughput and memory delta.
 
-## Milestone 2: Block-Sparse Solver Hardening
-- Preconditioned CG with diagonal/Schur preconditioners and convergence diagnostics.
-- Numerical stability guardrails (jitter policies, damping schedules, residual normalization).
-- Deterministic stress harnesses for large pose-graph graphs with reproducible seeds.
+## Milestone B: Optimization Control Plane Hardening
+- Solver snapshot artifacts with regression gates and stability thresholds.
+- Block-sparse solver instrumentation with preconditioned CG guardrails.
+- Stress suites for degenerate graphs, outliers, and loss-scale escalation.
 
-## Milestone 3: Control-Plane Orchestration + Backpressure
-- Multi-stage ingestion supervisors with circuit breakers and ordering buffers.
-- Backpressure telemetry and deterministic drain detection for offline/online ingestion.
-- Race-condition stress suites and regression gates for throughput and losslessness.
+## Milestone C: Unified Control-Plane Orchestration
+- Supervisors for ingestion, features, and optimization with consistent states.
+- Circuit breaker metrics, backpressure logs, and deterministic drain detection.
+- Race-condition and recovery simulations in CI.
 
-## Milestone 4: Telemetry Intelligence + Drift Governance
-- Stage-level SLO dashboards with streaming quantiles and drift thresholds.
-- CI gates for telemetry deltas, solver regressions, and latency budgets.
-- Historical trend exports (JSON/CSV) for offline dashboards.
+## Milestone D: Telemetry Intelligence & Drift Governance
+- Streaming quantiles for every stage and JSON/CSV exports.
+- Drift evaluation and baseline gating for latency + accuracy metrics.
+- Stage-level SLO dashboards with failure classification.
 
-## Milestone 5: Relocalization + Loop Closure Resilience
-- Recovery latency benchmarks and confidence intervals for relocalization.
-- Loop-closure verification packs with isolation scoring and gateable SLAs.
-- Deterministic injection packs for failure-mode reproduction.
+## Milestone E: Relocalization + Loop Closure Resilience
+- Recovery latency benchmarks with confidence intervals.
+- Loop-closure verification packs and robustness scoring.
+- Deterministic injection packs for reproducing failure modes.
 
-## Milestone 6: Calibration Drift Automation
-- Baseline/intrinsics deltas gated in CI with retained diagnostics.
-- Automated alerts for drift anomalies tied to dataset provenance.
-
-## Milestone 7: Multi-Sensor Expansion Blueprint
+## Milestone F: Multi-Sensor Expansion Blueprint
 - IMU/GPS fusion interfaces with deterministic synchronization scaffolding.
-- Multi-camera ingestion staging and calibration hooks.
-- C++ acceleration plan for latency-critical optimization kernels.
+- Multi-camera ingestion staging, calibration hooks, and C++ acceleration plan.
