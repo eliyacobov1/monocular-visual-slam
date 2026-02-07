@@ -26,6 +26,7 @@ from feature_pipeline import FeaturePipelineConfig
 from kitti_dataset import KittiSequence
 from robust_pose_estimator import RobustPoseEstimatorConfig
 from slam_api import SLAMSystem, SLAMSystemConfig, SLAMRunResult
+from tracking_control_plane import TrackingControlConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,11 +45,17 @@ def _filter_config(payload: dict[str, Any], config_type: type) -> dict[str, Any]
 
 def load_pipeline_config(
     path: Path,
-) -> tuple[FeaturePipelineConfig, RobustPoseEstimatorConfig, FeatureControlConfig | None]:
+) -> tuple[
+    FeaturePipelineConfig,
+    RobustPoseEstimatorConfig,
+    FeatureControlConfig | None,
+    TrackingControlConfig | None,
+]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     feature_payload = payload.get("feature_config", payload.get("feature", {}))
     pose_payload = payload.get("pose_config", payload.get("pose", {}))
     feature_control_payload = payload.get("feature_control")
+    tracking_control_payload = payload.get("tracking_control")
     feature_config = FeaturePipelineConfig(
         **_filter_config(feature_payload, FeaturePipelineConfig)
     )
@@ -60,7 +67,12 @@ def load_pipeline_config(
         feature_control_config = FeatureControlConfig(
             **_filter_config(feature_control_payload, FeatureControlConfig)
         )
-    return feature_config, pose_config, feature_control_config
+    tracking_control_config = None
+    if tracking_control_payload is not None:
+        tracking_control_config = TrackingControlConfig(
+            **_filter_config(tracking_control_payload, TrackingControlConfig)
+        )
+    return feature_config, pose_config, feature_control_config, tracking_control_config
 
 
 def run_kitti_sequence(
@@ -100,7 +112,9 @@ def run_kitti_sequence(
     if validation.has_warnings:
         LOGGER.warning("Dataset validation completed with warnings")
 
-    feature_config, pose_config, feature_control_config = load_pipeline_config(config_path)
+    feature_config, pose_config, feature_control_config, tracking_control_config = load_pipeline_config(
+        config_path
+    )
     config_hash = _hash_config(config_path)
 
     sequence_loader = KittiSequence(root, sequence, camera=camera)
@@ -124,6 +138,7 @@ def run_kitti_sequence(
         feature_config=feature_config,
         pose_config=pose_config,
         feature_control=feature_control_config,
+        tracking_control=tracking_control_config,
         use_run_subdir=use_run_subdir,
     )
     num_frames = len(frame_entries)

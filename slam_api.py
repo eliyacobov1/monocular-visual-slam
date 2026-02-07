@@ -19,7 +19,7 @@ from data_persistence import (
     build_metrics_bundle,
     summarize_trajectory,
 )
-from feature_control_plane import FeatureControlConfig, FeatureControlPlane, FeatureResult
+from feature_control_plane import FeatureControlConfig, FeatureControlPlane
 from feature_pipeline import FeaturePipelineConfig, build_feature_pipeline
 from robust_pose_estimator import (
     PoseEstimationDiagnostics,
@@ -31,6 +31,11 @@ from keyframe_manager import KeyframeManager
 from map_builder import MapBuilderConfig, MapBuildStats, MapSnapshotBuilder
 from persistent_map import MapRelocalizer, PersistentMapSnapshot, PersistentMapStore
 from frame_stream import FramePacket
+from tracking_control_plane import (
+    TrackingControlConfig,
+    TrackingControlPlane,
+    TrackingFrameResult,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +60,7 @@ class SLAMSystemConfig:
     feature_config: FeaturePipelineConfig
     pose_config: RobustPoseEstimatorConfig
     feature_control: FeatureControlConfig | None = None
+    tracking_control: TrackingControlConfig | None = None
     use_run_subdir: bool = True
     enable_telemetry: bool = True
     telemetry_name: str = "slam_telemetry"
@@ -132,6 +138,7 @@ class SLAMSystem:
         self._current_pose = np.eye(4)
         self._frame_id = 0
         self._feature_control_config = config.feature_control
+        self._tracking_control_config = config.tracking_control
         self._keyframe_manager = KeyframeManager(
             window_size=config.keyframe_window_size,
             min_translation=config.keyframe_min_translation,
@@ -287,11 +294,12 @@ class SLAMSystem:
         """Process frames with asynchronous feature extraction and deterministic ordering."""
 
         control_config = self._feature_control_config or FeatureControlConfig(enabled=True)
-        control_plane = FeatureControlPlane(
+        tracking_config = self._tracking_control_config or TrackingControlConfig(enabled=True)
+        feature_plane = FeatureControlPlane(
             feature_config=self.config.feature_config,
             control_config=control_config,
         )
-        pending_frames: dict[int, tuple[np.ndarray, float]] = {}
+        control_plane = TrackingControlPlane(feature_plane, config=tracking_config)
         seq_id = 0
         try:
             for item in frames:
@@ -308,18 +316,17 @@ class SLAMSystem:
                     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 else:
                     frame_gray = frame
-                pending_frames[seq_id] = (frame_gray, float(timestamp))
-                control_plane.submit(
+                control_plane.submit_frame(
                     seq_id=seq_id,
                     timestamp=float(timestamp),
-                    frame=frame_gray,
+                    frame_gray=frame_gray,
                 )
                 seq_id += 1
-                for result in control_plane.drain():
-                    self._handle_feature_result(result, pending_frames)
-            while pending_frames:
-                result = control_plane.collect(timeout_s=control_config.backpressure_timeout_s)
-                self._handle_feature_result(result, pending_frames)
+                for result in control_plane.drain_ready():
+                    self._handle_tracking_result(result)
+            while control_plane.pending_frames:
+                result = control_plane.collect(timeout_s=tracking_config.backpressure_timeout_s)
+                self._handle_tracking_result(result)
         finally:
             control_plane.close()
         return self.finalize_run()
@@ -369,30 +376,60 @@ class SLAMSystem:
             map_stats=map_stats,
         )
 
-    def _handle_feature_result(
-        self,
-        result: FeatureResult,
-        pending_frames: dict[int, tuple[np.ndarray, float]],
-    ) -> None:
-        payload = pending_frames.pop(result.seq_id, None)
-        if payload is None:
-            LOGGER.warning("Dropping feature result for unknown frame %d", result.seq_id)
-            return
-        frame_gray, timestamp = payload
+    def _handle_tracking_result(self, result: TrackingFrameResult) -> None:
         event = TelemetryEvent(
-            name="feature_detect_async",
-            duration_s=float(result.duration_s),
+            name="tracking_control",
+            duration_s=float(result.total_wait_s),
             timestamp=datetime.now(timezone.utc).isoformat(),
             metadata={
                 "frame_id": result.seq_id,
-                "queue_wait_s": result.queue_wait_s,
-                "cache_hit": result.cache_hit,
-                "error": result.error,
+                "feature_queue_wait_s": result.feature_queue_wait_s,
+                "drop_reason": result.drop_reason,
             },
         )
         self.telemetry.record_event(event)
-        if result.error:
-            LOGGER.warning("Feature extraction failed for frame %d: %s", result.seq_id, result.error)
+        frame_gray = result.frame_gray
+        timestamp = result.timestamp
+        if result.drop_reason is not None:
+            LOGGER.warning(
+                "Tracking frame %d dropped: %s",
+                result.seq_id,
+                result.drop_reason,
+            )
+            self._prev_frame = frame_gray
+            self._prev_kp = None
+            self._prev_desc = None
+            self._append_pose(
+                timestamp,
+                method="tracking_drop",
+                match_count=0,
+                inliers=0,
+                status="dropped",
+                failure_reason=result.drop_reason,
+            )
+            return
+        feature_result = result.feature_result
+        if feature_result is None:
+            LOGGER.warning("Missing feature result for frame %d", result.seq_id)
+            return
+        feature_event = TelemetryEvent(
+            name="feature_detect_async",
+            duration_s=float(feature_result.duration_s),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            metadata={
+                "frame_id": feature_result.seq_id,
+                "queue_wait_s": feature_result.queue_wait_s,
+                "cache_hit": feature_result.cache_hit,
+                "error": feature_result.error,
+            },
+        )
+        self.telemetry.record_event(feature_event)
+        if feature_result.error:
+            LOGGER.warning(
+                "Feature extraction failed for frame %d: %s",
+                feature_result.seq_id,
+                feature_result.error,
+            )
             self._prev_frame = frame_gray
             self._prev_kp = None
             self._prev_desc = None
@@ -402,14 +439,14 @@ class SLAMSystem:
                 match_count=0,
                 inliers=0,
                 status="skipped",
-                failure_reason=result.error,
+                failure_reason=feature_result.error,
             )
             return
         self._process_frame_with_features(
             frame_gray,
             timestamp,
-            result.keypoints,
-            result.descriptors,
+            feature_result.keypoints,
+            feature_result.descriptors,
         )
 
     def load_map_snapshot(self, map_dir: Path) -> None:
