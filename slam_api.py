@@ -19,6 +19,7 @@ from data_persistence import (
     build_metrics_bundle,
     summarize_trajectory,
 )
+from feature_control_plane import FeatureControlConfig, FeatureControlPlane, FeatureResult
 from feature_pipeline import FeaturePipelineConfig, build_feature_pipeline
 from robust_pose_estimator import (
     PoseEstimationDiagnostics,
@@ -53,6 +54,7 @@ class SLAMSystemConfig:
     intrinsics: np.ndarray
     feature_config: FeaturePipelineConfig
     pose_config: RobustPoseEstimatorConfig
+    feature_control: FeatureControlConfig | None = None
     use_run_subdir: bool = True
     enable_telemetry: bool = True
     telemetry_name: str = "slam_telemetry"
@@ -129,6 +131,7 @@ class SLAMSystem:
         self._prev_desc: np.ndarray | None = None
         self._current_pose = np.eye(4)
         self._frame_id = 0
+        self._feature_control_config = config.feature_control
         self._keyframe_manager = KeyframeManager(
             window_size=config.keyframe_window_size,
             min_translation=config.keyframe_min_translation,
@@ -158,10 +161,19 @@ class SLAMSystem:
                 {"frame_id": self._frame_id},
             ):
                 kp, desc = self.feature_pipeline.detect_and_describe(frame_gray)
+        return self._process_frame_with_features(frame_gray, timestamp, kp, desc)
+
+    def _process_frame_with_features(
+        self,
+        frame_gray: np.ndarray,
+        timestamp: float,
+        keypoints: list[cv2.KeyPoint],
+        descriptors: np.ndarray | None,
+    ) -> np.ndarray:
         if self._prev_frame is None:
             self._prev_frame = frame_gray
-            self._prev_kp = kp
-            self._prev_desc = desc
+            self._prev_kp = keypoints
+            self._prev_desc = descriptors
             self._append_pose(
                 timestamp,
                 method="bootstrap",
@@ -173,14 +185,14 @@ class SLAMSystem:
             return self._current_pose.copy()
 
         with timed_event("feature_match", self.telemetry, {"frame_id": self._frame_id}):
-            matches = self.feature_pipeline.match(self._prev_desc, desc)
+            matches = self.feature_pipeline.match(self._prev_desc, descriptors)
         if len(matches) < self.config.pose_config.min_matches:
             LOGGER.warning("Frame %d rejected: not enough matches", self._frame_id)
-            if self._attempt_relocalization(kp, desc, frame_gray, timestamp):
+            if self._attempt_relocalization(keypoints, descriptors, frame_gray, timestamp):
                 return self._current_pose.copy()
             self._prev_frame = frame_gray
-            self._prev_kp = kp
-            self._prev_desc = desc
+            self._prev_kp = keypoints
+            self._prev_desc = descriptors
             self._append_pose(
                 timestamp,
                 method="insufficient_matches",
@@ -199,17 +211,17 @@ class SLAMSystem:
             ):
                 pose_estimate = self.pose_estimator.estimate_pose(
                     kp1=self._prev_kp or [],
-                    kp2=kp,
+                    kp2=keypoints,
                     matches=matches,
                     intrinsics=self.config.intrinsics,
                 )
         except Exception as exc:
             LOGGER.exception("Pose estimation failed for frame %d", self._frame_id)
-            if self._attempt_relocalization(kp, desc, frame_gray, timestamp):
+            if self._attempt_relocalization(keypoints, descriptors, frame_gray, timestamp):
                 return self._current_pose.copy()
             self._prev_frame = frame_gray
-            self._prev_kp = kp
-            self._prev_desc = desc
+            self._prev_kp = keypoints
+            self._prev_desc = descriptors
             self._append_pose_failure(timestamp, exc)
             return self._current_pose.copy()
         relative_pose = np.eye(4)
@@ -217,10 +229,10 @@ class SLAMSystem:
         relative_pose[:3, 3] = pose_estimate.translation
         self._current_pose = self._current_pose @ relative_pose
         self._prev_frame = frame_gray
-        self._prev_kp = kp
-        self._prev_desc = desc
+        self._prev_kp = keypoints
+        self._prev_desc = descriptors
         self._append_pose_with_diagnostics(timestamp, pose_estimate.diagnostics)
-        self._maybe_add_keyframe(kp, desc)
+        self._maybe_add_keyframe(keypoints, descriptors)
         return self._current_pose.copy()
 
     def inject_tracking_loss(self, reason: str | None = None) -> None:
@@ -258,6 +270,8 @@ class SLAMSystem:
         ``frame`` and ``timestamp`` attributes (e.g., FramePacket).
         """
 
+        if self._feature_control_config and self._feature_control_config.enabled:
+            return self.run_stream_async(frames)
         for item in frames:
             if isinstance(item, tuple):
                 frame, timestamp = item
@@ -267,6 +281,47 @@ class SLAMSystem:
                 frame = item.frame
                 timestamp = item.timestamp
             self.process_frame(frame, float(timestamp))
+        return self.finalize_run()
+
+    def run_stream_async(self, frames: Iterable[FrameLike | tuple[np.ndarray, float]]) -> SLAMRunResult:
+        """Process frames with asynchronous feature extraction and deterministic ordering."""
+
+        control_config = self._feature_control_config or FeatureControlConfig(enabled=True)
+        control_plane = FeatureControlPlane(
+            feature_config=self.config.feature_config,
+            control_config=control_config,
+        )
+        pending_frames: dict[int, tuple[np.ndarray, float]] = {}
+        seq_id = 0
+        try:
+            for item in frames:
+                if isinstance(item, tuple):
+                    frame, timestamp = item
+                elif isinstance(item, FramePacket):
+                    frame, timestamp = item.frame, item.timestamp
+                else:
+                    frame = item.frame
+                    timestamp = item.timestamp
+                if frame.ndim not in (2, 3):
+                    raise ValueError("Frame must be a grayscale or BGR image")
+                if frame.ndim == 3:
+                    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                else:
+                    frame_gray = frame
+                pending_frames[seq_id] = (frame_gray, float(timestamp))
+                control_plane.submit(
+                    seq_id=seq_id,
+                    timestamp=float(timestamp),
+                    frame=frame_gray,
+                )
+                seq_id += 1
+                for result in control_plane.drain():
+                    self._handle_feature_result(result, pending_frames)
+            while pending_frames:
+                result = control_plane.collect(timeout_s=control_config.backpressure_timeout_s)
+                self._handle_feature_result(result, pending_frames)
+        finally:
+            control_plane.close()
         return self.finalize_run()
 
     def finalize_run(self) -> SLAMRunResult:
@@ -312,6 +367,49 @@ class SLAMSystem:
             frame_diagnostics=tuple(self.frame_diagnostics),
             map_snapshot_path=map_snapshot_path,
             map_stats=map_stats,
+        )
+
+    def _handle_feature_result(
+        self,
+        result: FeatureResult,
+        pending_frames: dict[int, tuple[np.ndarray, float]],
+    ) -> None:
+        payload = pending_frames.pop(result.seq_id, None)
+        if payload is None:
+            LOGGER.warning("Dropping feature result for unknown frame %d", result.seq_id)
+            return
+        frame_gray, timestamp = payload
+        event = TelemetryEvent(
+            name="feature_detect_async",
+            duration_s=float(result.duration_s),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            metadata={
+                "frame_id": result.seq_id,
+                "queue_wait_s": result.queue_wait_s,
+                "cache_hit": result.cache_hit,
+                "error": result.error,
+            },
+        )
+        self.telemetry.record_event(event)
+        if result.error:
+            LOGGER.warning("Feature extraction failed for frame %d: %s", result.seq_id, result.error)
+            self._prev_frame = frame_gray
+            self._prev_kp = None
+            self._prev_desc = None
+            self._append_pose(
+                timestamp,
+                method="feature_failure",
+                match_count=0,
+                inliers=0,
+                status="skipped",
+                failure_reason=result.error,
+            )
+            return
+        self._process_frame_with_features(
+            frame_gray,
+            timestamp,
+            result.keypoints,
+            result.descriptors,
         )
 
     def load_map_snapshot(self, map_dir: Path) -> None:

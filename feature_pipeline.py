@@ -16,6 +16,19 @@ class FeaturePipelineConfig:
     ratio_test: float = 0.8
     cross_check: bool = True
     max_matches: int | None = 500
+    deterministic_seed: int | None = 1337
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("Feature pipeline name must be non-empty")
+        if self.nfeatures <= 0:
+            raise ValueError("nfeatures must be positive")
+        if not 0 < self.ratio_test <= 1.0:
+            raise ValueError("ratio_test must be in (0, 1]")
+        if self.max_matches is not None and self.max_matches <= 0:
+            raise ValueError("max_matches must be positive when provided")
+        if self.deterministic_seed is not None and self.deterministic_seed < 0:
+            raise ValueError("deterministic_seed must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -57,6 +70,8 @@ class ORBFeaturePipeline(FeaturePipeline):
     def detect_and_describe(
         self, image: np.ndarray
     ) -> tuple[list[cv2.KeyPoint], np.ndarray | None]:
+        if self.config.deterministic_seed is not None:
+            cv2.setRNGSeed(self.config.deterministic_seed)
         keypoints, descriptors = self.detector.detectAndCompute(image, None)
         return keypoints, descriptors
 

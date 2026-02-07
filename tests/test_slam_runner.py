@@ -35,13 +35,17 @@ def test_load_pipeline_config_accepts_valid_payload(tmp_path: Path) -> None:
     payload = {
         "feature_config": {"nfeatures": 100},
         "pose_config": {"min_matches": 10},
+        "feature_control": {"enabled": True, "num_workers": 1, "max_inflight": 2},
     }
     config_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    feature_config, pose_config = load_pipeline_config(config_path)
+    feature_config, pose_config, feature_control_config = load_pipeline_config(config_path)
 
     assert feature_config.nfeatures == 100
     assert pose_config.min_matches == 10
+    assert feature_control_config is not None
+    assert feature_control_config.enabled is True
+    assert feature_control_config.num_workers == 1
 
 
 def test_load_pipeline_config_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -112,8 +116,8 @@ def test_run_kitti_sequence_async_ingestion(tmp_path: Path) -> None:
         use_run_subdir=False,
         max_frames=2,
         async_ingestion=True,
-        ingestion_entry_capacity=1,
-        ingestion_output_capacity=1,
+        ingestion_entry_capacity=16,
+        ingestion_output_capacity=16,
         ingestion_decode_workers=1,
         ingestion_read_timeout_s=0.2,
         ingestion_decode_timeout_s=0.2,

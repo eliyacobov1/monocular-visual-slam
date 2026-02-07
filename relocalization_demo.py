@@ -114,7 +114,7 @@ def run_demo(config: RelocalizationDemoConfig) -> dict[str, Any]:
     if validation.has_warnings:
         LOGGER.warning("Dataset validation completed with warnings")
 
-    feature_config, pose_config = load_pipeline_config(config.pipeline_config)
+    feature_config, pose_config, feature_control_config = load_pipeline_config(config.pipeline_config)
     config_hash = _hash_config(config.pipeline_config)
 
     sequence_loader = KittiSequence(config.root, config.sequence, camera=config.camera)
@@ -130,6 +130,7 @@ def run_demo(config: RelocalizationDemoConfig) -> dict[str, Any]:
         intrinsics=intrinsics,
         feature_config=feature_config,
         pose_config=pose_config,
+        feature_control=feature_control_config,
         use_run_subdir=config.use_run_subdir,
     )
     slam = SLAMSystem(slam_config)
