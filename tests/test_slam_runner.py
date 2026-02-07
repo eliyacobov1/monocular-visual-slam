@@ -36,16 +36,22 @@ def test_load_pipeline_config_accepts_valid_payload(tmp_path: Path) -> None:
         "feature_config": {"nfeatures": 100},
         "pose_config": {"min_matches": 10},
         "feature_control": {"enabled": True, "num_workers": 1, "max_inflight": 2},
+        "tracking_control": {"enabled": True, "max_pending_frames": 8},
     }
     config_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    feature_config, pose_config, feature_control_config = load_pipeline_config(config_path)
+    feature_config, pose_config, feature_control_config, tracking_control_config = load_pipeline_config(
+        config_path
+    )
 
     assert feature_config.nfeatures == 100
     assert pose_config.min_matches == 10
     assert feature_control_config is not None
     assert feature_control_config.enabled is True
     assert feature_control_config.num_workers == 1
+    assert tracking_control_config is not None
+    assert tracking_control_config.enabled is True
+    assert tracking_control_config.max_pending_frames == 8
 
 
 def test_load_pipeline_config_rejects_unknown_fields(tmp_path: Path) -> None:

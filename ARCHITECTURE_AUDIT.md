@@ -3,65 +3,62 @@
 ## Phase 1: Deep Gap Audit
 
 ### Why a Senior Algorithm Engineer would reject the current repo
-1. **Fragmented control-plane supervision**
-   - The ingestion pipeline relied on a single supervisor loop, limiting
-     stage-level telemetry, deterministic backpressure analysis, and
-     multi-stage scaling visibility.
-2. **No structured control-plane event log**
-   - Telemetry was reduced to counters and samples without a deterministic,
-     queryable event log for CI regression diagnostics.
-3. **Coarse queue scaling signals**
-   - Queue scaling decisions were not stage-specific, which obscured
-     entry/output pressure and made post-mortems on latency regressions
-     ambiguous.
-4. **Limited backpressure observability**
-   - There was no explicit backpressure event stream to trace capacity
-     saturation, which blocks CI gating for ingestion reliability.
-5. **Missing stress-oriented supervision tests**
-   - No stress tests asserted deterministic ordering, race-condition
-     containment, or telemetry sanity under high concurrency.
+1. **No deterministic tracking control plane**
+   - Async feature extraction is available, but tracking orchestration lacks a
+     supervisory layer for frame deadlines, drop policies, and circuit breaker
+     recovery.
+2. **Missing frame-level backpressure governance**
+   - There is no bounded frame buffer with deterministic TTL expiry, which
+     makes stall recovery and telemetry gating unreliable under load.
+3. **No unified tracking telemetry**
+   - Frame wait time, feature queue latency, and drop causes are not aggregated
+     into a single drift-ready summary for CI gating.
+4. **Tracking resilience is not observable**
+   - Drop events, deadline expirations, and breaker trips are not streamed as
+     structured events, blocking root-cause diagnostics.
+5. **No tracking stress coverage**
+   - Concurrency and drop policies for tracking have no dedicated stress
+     verification suite.
 
 ### Heavy-Lift Subsystem Selection
-**Subsystem:** Control-plane orchestration and telemetry instrumentation.
+**Subsystem:** Tracking control plane and deterministic frame supervision.
 
-**Justification:** The ingestion control plane is the highest leverage point for
-accuracy-first SLAM at scale because it dictates deterministic ordering,
-backpressure integrity, and the reliability of downstream tracking and
-optimization. Senior-level readiness requires stage-level supervision,
-structured telemetry, and regression-ready event logs.
+**Justification:** Tracking is the critical path for pose stability. Without a
+ deterministic, supervised tracking control plane, async feature extraction
+ cannot be trusted under load. A Senior-level system needs bounded buffers,
+ deadline enforcement, and event-driven telemetry for every frame.
 
 ## Phase 2: Architectural & Algorithmic Blueprint
 
 ### Big-O Profile
 | Component | Previous Complexity | New Complexity | Notes |
 | --- | --- | --- | --- |
-| Queue tuning decision | O(1) | O(1) | Decisions are per-stage, but the asymptotic order is unchanged. |
-| Supervisor loop | O(S) | O(S) | S = number of supervised stages; now explicit instead of implicit. |
-| Event log append | O(1) | O(1) | Fixed-capacity ring buffer for deterministic events. |
-| Ordering buffer | O(log N) | O(log N) | Heap-backed buffer remains logarithmic, with dedupe tracking. |
+| Pending frame buffer insert | O(1) | O(log N) | Heap-backed TTL tracking adds logarithmic maintenance. |
+| Expiry sweep | O(1) | O(K log N) | K = number of expirations; heap pop drives complexity. |
+| Feature result merge | O(1) | O(1) | Direct lookup in ordered buffer remains constant time. |
+| Event log append | O(1) | O(1) | Fixed-capacity ring buffer. |
 
 ### Design Justification
-The control-plane overhaul resolves critical bottlenecks:
-- **Stage-level autonomy.** Each stage (entry/output) now scales independently,
-  making telemetry actionable and tuning reproducible.
-- **Deterministic event logging.** The control plane emits structured events for
-  queue scaling and backpressure, which directly feed CI regression gates.
-- **Concurrency resilience.** Supervisors run at deterministic cadence with
-  explicit drain conditions, preventing silent pressure build-up.
-- **Telemetry richness.** Per-stage samples, latency traces, and event logs
-  enable performance regression analysis without manual instrumentation.
+The new tracking control plane resolves critical bottlenecks:
+- **Bounded deterministic buffering.** Ordered buffers with TTL ensure that
+  stalled frames cannot deadlock the tracking loop.
+- **Circuit breaker resiliency.** Consecutive failures trip the breaker and
+  protect downstream pose estimation from cascading errors.
+- **Telemetry-first supervision.** Aggregated wait-time quantiles and structured
+  event logs enable regression gating and drift analysis.
+- **Explicit drop governance.** Drop reasons are emitted deterministically,
+  enabling actionable SLOs for frame retention.
 
-### Target Architecture (Control-Plane Orchestration 3.0)
-- **Stage supervisors (Strategy pattern):** Each stage has a dedicated
-  supervisor for queue/worker scaling and telemetry emission.
-- **Deterministic event log:** Fixed-size ring buffer for control-plane events
-  to power CI regression diagnostics.
-- **Stage-aware telemetry:** Per-stage queue pressure samples, latency
-  samples, and backpressure counters for actionable observability.
-- **Ordering buffer hardening:** Dedupe-aware heap buffer that preserves
-  deterministic output even under out-of-order completion.
+### Target Architecture (Tracking Control Plane)
+- **Pending frame buffer (Heap + OrderedDict):** TTL-backed frame buffer with
+  deterministic drop policies.
+- **Tracking supervisor (State pattern):** Circuit breaker backed state changes
+  (healthy, recovering, tripped).
+- **Telemetry aggregator:** Streaming quantiles for end-to-end wait time and
+  feature queue latency.
+- **Structured event log:** Ring buffer for drop events and orphaned results.
 
 ### Expected Outcomes
-- Deterministic ingestion ordering with stage-level backpressure visibility.
-- Telemetry that supports regression gating for control-plane drift.
-- Stress-testable ingestion pipeline that surfaces concurrency failures early.
+- Deterministic tracking under backpressure with bounded memory usage.
+- CI-ready telemetry drift evaluation for tracking latency regressions.
+- Stress-testable tracking control plane with explicit drop behavior.

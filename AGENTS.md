@@ -1,9 +1,9 @@
-# Agent Instructions (Principal-Grade SLAM Overhaul v2)
+# Agent Instructions (Principal-Grade SLAM Overhaul v3)
 
 ## Mission
-Ship a deterministic, telemetry-first monocular SLAM stack with production-grade
-control planes for ingestion, feature extraction, optimization, and evaluation.
-The platform must be interview-ready for Staff/Principal roles: modular,
+Deliver a deterministic, telemetry-first SLAM stack with production-grade
+control planes for ingestion, tracking, optimization, and evaluation. The
+platform must be interview-ready for Staff/Principal roles: modular,
 observable, and benchmark-gated.
 
 ## Non-Negotiables
@@ -14,8 +14,10 @@ observable, and benchmark-gated.
 5. **Modularity**: swappable backends for optimization + feature extraction.
 
 ## Architecture Priorities
-- Feature extraction must be supervised with deterministic ordering, caching, and
-  async concurrency support.
+- Tracking must be supervised with deterministic ordering, TTL enforcement, and
+  drop governance.
+- Feature extraction must be supervised with deterministic ordering, caching,
+  and async concurrency support.
 - Optimization must expose solver snapshots, per-iteration diagnostics, and
   regression thresholds.
 - Ingestion must isolate failures with bounded queues, retries, and event logs.
@@ -29,11 +31,11 @@ observable, and benchmark-gated.
 - Deterministic outputs for every benchmark and report.
 
 ## Roadmap Milestones (High-Level)
-- **Feature Control Plane**: async feature extraction with ordering buffers,
-  cache telemetry, and supervisor events.
+- **Tracking Control Plane**: TTL-backed frame buffers, drop telemetry, circuit
+  breaker supervision.
 - **Optimization Resilience**: block-sparse solver guardrails + solver snapshots.
 - **Telemetry Intelligence**: drift evaluation, SLO dashboards, quantile exports.
-- **Control-Plane Orchestration**: ingestion + feature + optimization
+- **Control-Plane Orchestration**: ingestion + tracking + optimization
   supervisors with unified events.
 - **Multi-Sensor Expansion**: IMU/GPS hooks and multi-camera synchronization.
 
