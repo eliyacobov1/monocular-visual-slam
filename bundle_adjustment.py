@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
@@ -9,12 +10,39 @@ import cv2
 import numpy as np
 from scipy.optimize import least_squares
 
+LOGGER = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class Observation:
     frame_index: int
     point_index: int
     uv: np.ndarray
+
+
+@dataclass(frozen=True)
+class BundleAdjustmentConfig:
+    """Configuration for bundle-adjustment stability gates."""
+
+    max_condition_number: float = 1e8
+    min_singular_value: float = 1e-12
+
+    def __post_init__(self) -> None:
+        if self.max_condition_number <= 0:
+            raise ValueError("max_condition_number must be positive")
+        if self.min_singular_value <= 0:
+            raise ValueError("min_singular_value must be positive")
+
+
+@dataclass(frozen=True)
+class BundleAdjustmentDiagnostics:
+    """Diagnostics for bundle adjustment conditioning checks."""
+
+    condition_number: float
+    min_singular_value: float
+    status: str
+    message: str
+    fallback_applied: bool
 
 
 def _pose_to_vec(pose: np.ndarray) -> np.ndarray:
@@ -58,7 +86,9 @@ def run_bundle_adjustment(
     observations: Iterable[Observation],
     intrinsics: np.ndarray,
     max_nfev: int = 50,
-) -> tuple[list[np.ndarray], np.ndarray]:
+    config: BundleAdjustmentConfig | None = None,
+) -> tuple[list[np.ndarray], np.ndarray, BundleAdjustmentDiagnostics]:
+    config = config or BundleAdjustmentConfig()
     if points_3d.size == 0:
         raise ValueError("No points provided for bundle adjustment")
 
@@ -102,8 +132,53 @@ def run_bundle_adjustment(
         return np.array(res)
 
     result = least_squares(residuals, x0, loss="huber", f_scale=1.0, max_nfev=max_nfev)
+    condition_number, min_singular_value = _conditioning_stats(result.jac)
+    fallback = False
+    message = "Bundle adjustment completed"
+    status = "ok"
+    if condition_number > config.max_condition_number or min_singular_value < config.min_singular_value:
+        fallback = True
+        status = "fallback"
+        message = "Bundle adjustment ill-conditioned; fallback to prior state"
+        LOGGER.warning(
+            message,
+            extra={
+                "condition_number": condition_number,
+                "min_singular_value": min_singular_value,
+            },
+        )
+    if fallback:
+        diagnostics = BundleAdjustmentDiagnostics(
+            condition_number=condition_number,
+            min_singular_value=min_singular_value,
+            status=status,
+            message=message,
+            fallback_applied=True,
+        )
+        return list(poses), points_3d.copy(), diagnostics
     optimized_pose_vecs = result.x[: num_opt_poses * 6].reshape(num_opt_poses, 6)
     optimized_points = result.x[num_opt_poses * 6 :].reshape(num_points, 3)
     optimized_poses = [fixed_pose]
     optimized_poses.extend([_vec_to_pose(vec) for vec in optimized_pose_vecs])
-    return optimized_poses, optimized_points
+    diagnostics = BundleAdjustmentDiagnostics(
+        condition_number=condition_number,
+        min_singular_value=min_singular_value,
+        status=status,
+        message=message,
+        fallback_applied=False,
+    )
+    return optimized_poses, optimized_points, diagnostics
+
+
+def _conditioning_stats(jacobian: np.ndarray) -> tuple[float, float]:
+    if jacobian.size == 0:
+        return float("inf"), 0.0
+    _, singular_values, _ = np.linalg.svd(jacobian, full_matrices=False)
+    if singular_values.size == 0:
+        return float("inf"), 0.0
+    min_singular = float(singular_values[-1])
+    max_singular = float(singular_values[0])
+    if min_singular == 0.0:
+        return float("inf"), 0.0
+    condition_number = float(max_singular / min_singular)
+    return condition_number, min_singular

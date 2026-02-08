@@ -12,7 +12,7 @@ cv2 = pytest.importorskip("cv2")
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from robust_pose_estimator import RobustPoseEstimator, RobustPoseEstimatorConfig
+from robust_pose_estimator import PoseEstimationFailure, RobustPoseEstimator, RobustPoseEstimatorConfig
 
 
 def _project_points(points: np.ndarray, rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
@@ -44,8 +44,54 @@ def test_robust_pose_estimator_selects_model() -> None:
     kp2 = _make_keypoints(pts2)
     matches = _make_matches(len(kp1))
 
-    estimator = RobustPoseEstimator(RobustPoseEstimatorConfig(min_matches=20))
+    estimator = RobustPoseEstimator(RobustPoseEstimatorConfig(min_matches=20, min_parallax=0.0))
     estimate = estimator.estimate_pose(kp1, kp2, matches, intrinsics)
 
     assert estimate.diagnostics.inliers > 0
     assert estimate.diagnostics.method in {"essential", "homography"}
+
+
+def test_pose_estimator_rejects_low_parallax() -> None:
+    rng = np.random.default_rng(1)
+    points_3d = rng.uniform(-1.0, 1.0, size=(40, 3)) + np.array([0.0, 0.0, 3.0])
+
+    intrinsics = np.eye(3)
+    rotation = np.eye(3)
+    translation = np.array([0.01, 0.0, 0.0])
+
+    pts1 = _project_points(points_3d, np.eye(3), np.zeros(3))
+    pts2 = _project_points(points_3d, rotation, translation)
+
+    kp1 = _make_keypoints(pts1)
+    kp2 = _make_keypoints(pts2)
+    matches = _make_matches(len(kp1))
+
+    config = RobustPoseEstimatorConfig(min_matches=20, min_parallax=10.0)
+    estimator = RobustPoseEstimator(config)
+
+    with pytest.raises(PoseEstimationFailure) as exc:
+        estimator.estimate_pose(kp1, kp2, matches, intrinsics)
+    assert exc.value.reason == "low_parallax"
+
+
+def test_pose_estimator_rejects_cheirality_ratio() -> None:
+    rng = np.random.default_rng(2)
+    points_3d = rng.uniform(-1.0, 1.0, size=(50, 3)) + np.array([0.0, 0.0, 3.0])
+
+    intrinsics = np.eye(3)
+    rotation = np.eye(3)
+    translation = np.array([0.2, 0.0, 0.0])
+
+    pts1 = _project_points(points_3d, np.eye(3), np.zeros(3))
+    pts2 = _project_points(points_3d, rotation, translation)
+
+    kp1 = _make_keypoints(pts1)
+    kp2 = _make_keypoints(pts2)
+    matches = _make_matches(len(kp1))
+
+    config = RobustPoseEstimatorConfig(min_matches=20, min_cheirality_ratio=1.1, min_parallax=0.0)
+    estimator = RobustPoseEstimator(config)
+
+    with pytest.raises(PoseEstimationFailure) as exc:
+        estimator.estimate_pose(kp1, kp2, matches, intrinsics)
+    assert exc.value.reason == "cheirality_ratio"

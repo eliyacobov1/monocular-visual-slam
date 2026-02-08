@@ -24,6 +24,8 @@ class PoseEstimationDiagnostics:
     inliers: int
     inlier_ratio: float
     median_parallax: float
+    cheirality_inliers: int
+    cheirality_ratio: float
     score: float
 
 
@@ -42,6 +44,7 @@ class RobustPoseEstimatorConfig:
     """Configuration for robust pose estimation."""
 
     min_matches: int = 20
+    min_inliers: int = 30
     base_ransac_threshold: float = 0.01
     min_ransac_threshold: float = 0.005
     max_ransac_threshold: float = 0.02
@@ -49,6 +52,32 @@ class RobustPoseEstimatorConfig:
     homography_bias: float = 0.9
     essential_bias: float = 1.0
     min_parallax: float = 1.0
+    min_cheirality_ratio: float = 0.6
+    min_cheirality_inliers: int = 12
+
+    def __post_init__(self) -> None:
+        if self.min_matches <= 0:
+            raise ValueError("min_matches must be positive")
+        if self.min_inliers <= 0:
+            raise ValueError("min_inliers must be positive")
+        if self.min_inlier_ratio <= 0:
+            raise ValueError("min_inlier_ratio must be positive")
+        if self.min_parallax < 0:
+            raise ValueError("min_parallax must be non-negative")
+        if self.min_cheirality_ratio <= 0:
+            raise ValueError("min_cheirality_ratio must be positive")
+        if self.min_cheirality_inliers <= 0:
+            raise ValueError("min_cheirality_inliers must be positive")
+
+
+class PoseEstimationFailure(RuntimeError):
+    """Pose estimation failure with recovery metadata."""
+
+    def __init__(self, reason: str, recovery_action: str, metrics: dict[str, float]) -> None:
+        super().__init__(f"{reason} (recovery={recovery_action})")
+        self.reason = reason
+        self.recovery_action = recovery_action
+        self.metrics = metrics
 
 
 class RobustPoseEstimator:
@@ -95,12 +124,7 @@ class RobustPoseEstimator:
 
         candidates = [essential_estimate, homography_estimate]
         best = max(candidates, key=lambda cand: cand.diagnostics.score)
-        if best.diagnostics.inlier_ratio < self.config.min_inlier_ratio:
-            LOGGER.warning(
-                "Pose estimation rejected: low inlier ratio %.3f",
-                best.diagnostics.inlier_ratio,
-            )
-            raise RuntimeError("Pose estimation failed due to low inlier ratio")
+        self._apply_stability_gates(best)
         LOGGER.info(
             "Pose estimation selected %s with %d/%d inliers",
             best.diagnostics.method,
@@ -132,6 +156,15 @@ class RobustPoseEstimator:
 
         inlier_ratio = float(len(inliers) / max(match_count, 1))
         median_parallax = _median_parallax(kp1, kp2, matches, inliers)
+        cheirality_ratio, cheirality_inliers = _cheirality_ratio(
+            kp1,
+            kp2,
+            matches,
+            inliers,
+            rotation,
+            translation,
+            intrinsics,
+        )
         score = (
             self.config.essential_bias
             * inlier_ratio
@@ -143,6 +176,8 @@ class RobustPoseEstimator:
             inliers=len(inliers),
             inlier_ratio=inlier_ratio,
             median_parallax=median_parallax,
+            cheirality_inliers=cheirality_inliers,
+            cheirality_ratio=cheirality_ratio,
             score=score,
         )
         return PoseEstimate(
@@ -177,6 +212,8 @@ class RobustPoseEstimator:
             inliers=len(inliers),
             inlier_ratio=inlier_ratio,
             median_parallax=median_parallax,
+            cheirality_inliers=len(inliers),
+            cheirality_ratio=1.0,
             score=score,
         )
         return PoseEstimate(
@@ -185,6 +222,33 @@ class RobustPoseEstimator:
             inlier_indices=inliers,
             diagnostics=diagnostics,
         )
+
+    def _apply_stability_gates(self, estimate: PoseEstimate) -> None:
+        diag = estimate.diagnostics
+        metrics = {
+            "match_count": float(diag.match_count),
+            "inliers": float(diag.inliers),
+            "inlier_ratio": float(diag.inlier_ratio),
+            "median_parallax": float(diag.median_parallax),
+            "cheirality_ratio": float(diag.cheirality_ratio),
+            "cheirality_inliers": float(diag.cheirality_inliers),
+        }
+        if diag.inliers < self.config.min_inliers:
+            LOGGER.warning("Pose estimation rejected: low inlier count", extra=metrics)
+            raise PoseEstimationFailure("low_inlier_count", "relocalize", metrics)
+        if diag.inlier_ratio < self.config.min_inlier_ratio:
+            LOGGER.warning("Pose estimation rejected: low inlier ratio", extra=metrics)
+            raise PoseEstimationFailure("low_inlier_ratio", "relocalize", metrics)
+        if diag.median_parallax < self.config.min_parallax:
+            LOGGER.warning("Pose estimation rejected: low parallax", extra=metrics)
+            raise PoseEstimationFailure("low_parallax", "relocalize", metrics)
+        if diag.method == "essential":
+            if diag.cheirality_inliers < self.config.min_cheirality_inliers:
+                LOGGER.warning("Pose estimation rejected: cheirality inliers", extra=metrics)
+                raise PoseEstimationFailure("cheirality_inliers", "relocalize", metrics)
+            if diag.cheirality_ratio < self.config.min_cheirality_ratio:
+                LOGGER.warning("Pose estimation rejected: cheirality ratio", extra=metrics)
+                raise PoseEstimationFailure("cheirality_ratio", "relocalize", metrics)
 
 
 def _median_parallax(
@@ -200,6 +264,36 @@ def _median_parallax(
     if pts1.size == 0 or pts2.size == 0:
         return 0.0
     return float(np.median(np.linalg.norm(pts2 - pts1, axis=1)))
+
+
+def _cheirality_ratio(
+    kp1: Sequence[cv2.KeyPoint],
+    kp2: Sequence[cv2.KeyPoint],
+    matches: Sequence[cv2.DMatch],
+    inliers: np.ndarray,
+    rotation: np.ndarray,
+    translation: np.ndarray,
+    intrinsics: np.ndarray,
+) -> tuple[float, int]:
+    if len(inliers) == 0:
+        return 0.0, 0
+    pts1 = np.array([kp1[matches[i].queryIdx].pt for i in inliers], dtype=np.float32).T
+    pts2 = np.array([kp2[matches[i].trainIdx].pt for i in inliers], dtype=np.float32).T
+    if pts1.size == 0 or pts2.size == 0:
+        return 0.0, 0
+    proj_a = intrinsics @ np.hstack([np.eye(3), np.zeros((3, 1))])
+    proj_b = intrinsics @ np.hstack([rotation, translation.reshape(3, 1)])
+    homog = cv2.triangulatePoints(proj_a, proj_b, pts1, pts2)
+    pts_3d = homog[:3] / homog[3]
+    depth_a = pts_3d[2]
+    depth_b = (rotation @ pts_3d + translation.reshape(3, 1))[2]
+    valid = np.isfinite(depth_a) & np.isfinite(depth_b)
+    if not np.any(valid):
+        return 0.0, 0
+    positive = (depth_a > 0) & (depth_b > 0) & valid
+    count = int(np.sum(positive))
+    ratio = float(count / max(len(inliers), 1))
+    return ratio, count
 
 
 def _normalize_translation(translation: np.ndarray) -> np.ndarray:

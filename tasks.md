@@ -10,7 +10,7 @@
 2. **Deterministic ordering + data integrity** (Complete)
    - Enforce deterministic ordering for all stage queues, loop-closure candidate sets, and optimization inputs (stable ordering + explicit tie-breakers).
    - Add stable hashing for stage event streams and data snapshots to make reproducibility auditable.
-3. **Algorithmic stability gates**
+3. **Algorithmic stability gates** (Complete)
    - Add degeneracy detection (low parallax, low inlier count, cheirality failure) with explicit recovery actions.
    - Introduce numerical conditioning checks for local BA / pose-graph updates with fallback strategies.
 4. **Determinism validation suite**

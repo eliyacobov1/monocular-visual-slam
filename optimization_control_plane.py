@@ -15,6 +15,7 @@ from control_plane_hub import StageHealthSnapshot
 from data_persistence import P2Quantile
 from deterministic_integrity import stable_event_digest
 from graph_optimization import (
+    ConditioningDiagnostics,
     IterationDiagnostics,
     PoseGraphProblem,
     PoseGraphSnapshot,
@@ -22,6 +23,7 @@ from graph_optimization import (
     RobustLossConfig,
     SolverConfig,
     SolverResult,
+    compute_conditioning_diagnostics,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -217,6 +219,43 @@ class OptimizationSupervisor:
         diagnostics: list[IterationDiagnostics] = []
         x_opt = np.asarray(list(x0), dtype=float)
 
+        conditioning = self._check_conditioning(problem, x_opt, solver_config, loss_config)
+        if conditioning is not None:
+            residual = problem.residual_fn(x_opt)
+            last_result = SolverResult(
+                success=False,
+                status=-2,
+                cost=float(0.5 * np.dot(residual, residual)),
+                residual_norm=float(np.linalg.norm(residual)),
+                iterations=0,
+                message=conditioning.message,
+                diagnostics=None,
+            )
+            telemetry = _summarize_telemetry((), self._config.telemetry_quantiles)
+            finished_at_s = time.perf_counter()
+            events = tuple(self._event_log.snapshot())
+            report = OptimizationRunReport(
+                snapshot_digest=snapshot.digest(),
+                solver_name=solver_name,
+                attempts=attempts,
+                success=False,
+                result=last_result,
+                telemetry=telemetry,
+                events=events,
+                started_at_s=started_at_s,
+                finished_at_s=finished_at_s,
+            )
+            with self._lock:
+                self._run_count += 1
+                self._failure_count += 1
+                self._last_success = False
+                self._last_attempts = attempts
+                self._last_duration_s = report.duration_s
+                self._last_snapshot_digest = report.snapshot_digest
+                self._last_solver_name = solver_name
+                self._last_cost = last_result.cost
+            return list(x_opt), last_result, report
+
         for attempt in range(self._config.max_attempts):
             attempts += 1
             loss_scale = loss_config.scale * self._config.loss_scale_multipliers[
@@ -234,6 +273,8 @@ class OptimizationSupervisor:
                 gtol=solver_config.gtol,
                 linear_solver_max_iter=solver_config.linear_solver_max_iter,
                 linear_solver_tol=solver_config.linear_solver_tol,
+                max_condition_number=solver_config.max_condition_number,
+                min_diagonal=solver_config.min_diagonal,
             )
             self._record_event(
                 stage="solver",
@@ -327,6 +368,57 @@ class OptimizationSupervisor:
             self._last_solver_name = solver_name
             self._last_cost = last_result.cost
         return list(x_opt), last_result, report
+
+    def _check_conditioning(
+        self,
+        problem: PoseGraphProblem,
+        x0: np.ndarray,
+        solver_config: SolverConfig,
+        loss_config: RobustLossConfig,
+    ) -> ConditioningDiagnostics | None:
+        linearized = list(problem.linearize_fn(x0))
+        if not linearized:
+            return None
+        num_blocks = problem.parameter_size // problem.block_size
+        conditioning = compute_conditioning_diagnostics(
+            linearized,
+            block_size=problem.block_size,
+            num_blocks=num_blocks,
+            loss_config=loss_config,
+            damping=solver_config.damping,
+        )
+        metadata = {
+            "condition_number": conditioning.condition_number,
+            "min_diagonal": conditioning.min_diagonal,
+            "max_diagonal": conditioning.max_diagonal,
+            "status": conditioning.status,
+        }
+        self._record_event(
+            stage="conditioning",
+            event_type="check",
+            message=conditioning.message,
+            metadata=metadata,
+        )
+        if (
+            conditioning.status != "ok"
+            or conditioning.condition_number > solver_config.max_condition_number
+            or conditioning.min_diagonal < solver_config.min_diagonal
+        ):
+            message = "Conditioning gate tripped; fallback to prior state"
+            self._record_event(
+                stage="conditioning",
+                event_type="tripped",
+                message=message,
+                metadata=metadata,
+            )
+            return ConditioningDiagnostics(
+                condition_number=conditioning.condition_number,
+                min_diagonal=conditioning.min_diagonal,
+                max_diagonal=conditioning.max_diagonal,
+                status="tripped",
+                message=message,
+            )
+        return None
 
     def _record_event(self, *, stage: str, event_type: str, message: str, metadata: dict[str, object]) -> None:
         event = OptimizationStageEvent(
