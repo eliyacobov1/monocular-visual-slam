@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import logging
-import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +14,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from deterministic_registry import build_registry
 from experiment_registry import create_run_artifacts, write_resolved_config
 from regression_baselines import compare_metrics, load_baseline_store, upsert_baseline
 from data_persistence import (
@@ -96,11 +96,6 @@ class EvaluationConfig:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _set_deterministic_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
 
 
 def _resolve_path(value: str | Path, base_dir: Path) -> Path:
@@ -463,12 +458,14 @@ def _write_summary_csv(path: Path, per_sequence: dict[str, dict[str, float]], ag
 
 
 def run_evaluation(config: EvaluationConfig) -> dict[str, Any]:
-    _set_deterministic_seed(config.seed)
+    registry = build_registry(seed=config.seed, config_path=config.config_path, config_hash=config.config_hash)
+    registry.apply_global_seed()
     artifacts = create_run_artifacts(
         config.output_dir,
         config.run_id,
         config.config_path,
         config.config_hash,
+        config.seed,
         config.use_run_subdir,
     )
     output_dir = artifacts.run_dir

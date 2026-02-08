@@ -4,7 +4,7 @@
 **Objective:** Make every SLAM run reproducible end-to-end and prove numerical stability.
 
 **Sequence of tasks**
-1. **Global determinism contract**
+1. **Global determinism contract** (Complete)
    - Introduce a single deterministic seed/config registry that feeds ingestion, feature extraction, tracking, optimization, evaluation, and telemetry.
    - Require every artifact (trajectories, metrics, diagnostics, telemetry) to embed the seed + config hash.
 2. **Deterministic ordering + data integrity**

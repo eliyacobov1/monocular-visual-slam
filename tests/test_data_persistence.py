@@ -34,6 +34,7 @@ def test_run_data_store_roundtrip(tmp_path: Path) -> None:
         run_id="unit_run",
         config_path=config_path,
         config_hash="hash",
+        seed=7,
         use_subdir=False,
         resolved_config={"run_id": "unit_run"},
     )
@@ -97,6 +98,7 @@ def test_load_trajectory_npz_positions(tmp_path: Path) -> None:
         run_id="unit_run",
         config_path=config_path,
         config_hash="hash",
+        seed=7,
         use_subdir=False,
         resolved_config={"run_id": "unit_run"},
     )

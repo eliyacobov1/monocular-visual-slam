@@ -29,6 +29,7 @@ class TrackingControlConfig:
     backpressure_timeout_s: float | None = 0.5
     telemetry_quantiles: tuple[float, ...] = (0.5, 0.9, 0.99)
     event_log_capacity: int = 256
+    deterministic_seed: int = 1337
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
 
     def __post_init__(self) -> None:
@@ -42,6 +43,8 @@ class TrackingControlConfig:
             raise ValueError("telemetry_quantiles must be non-empty")
         if self.event_log_capacity <= 0:
             raise ValueError("event_log_capacity must be positive")
+        if self.deterministic_seed < 0:
+            raise ValueError("deterministic_seed must be non-negative")
 
 
 class TrackingState(str, Enum):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 
@@ -20,6 +20,7 @@ from data_persistence import (
     build_metrics_bundle,
     summarize_trajectory,
 )
+from deterministic_registry import DeterminismConfig, DeterminismRegistry
 from feature_control_plane import FeatureControlConfig, FeatureControlPlane
 from feature_pipeline import FeaturePipelineConfig, build_feature_pipeline
 from robust_pose_estimator import (
@@ -57,6 +58,7 @@ class SLAMSystemConfig:
     output_dir: Path
     config_path: Path
     config_hash: str
+    seed: int
     intrinsics: np.ndarray
     feature_config: FeaturePipelineConfig
     pose_config: RobustPoseEstimatorConfig
@@ -119,18 +121,32 @@ class SLAMSystem:
         if config.intrinsics.shape != (3, 3):
             raise ValueError("Intrinsics must be a 3x3 matrix")
         self.config = config
-        self.feature_pipeline = build_feature_pipeline(config.feature_config)
+        self._determinism = DeterminismRegistry(
+            DeterminismConfig(
+                seed=config.seed,
+                config_path=config.config_path,
+                config_hash=config.config_hash,
+            )
+        )
+        self._determinism.apply_global_seed()
+        self._feature_config = replace(
+            config.feature_config,
+            deterministic_seed=self._determinism.seed_for("feature_pipeline"),
+        )
+        self.feature_pipeline = build_feature_pipeline(self._feature_config)
         self.pose_estimator = RobustPoseEstimator(config.pose_config)
         self.data_store = RunDataStore.create(
             base_dir=config.output_dir,
             run_id=config.run_id,
             config_path=config.config_path,
             config_hash=config.config_hash,
+            seed=config.seed,
             use_subdir=config.use_run_subdir,
             resolved_config={
                 "intrinsics": config.intrinsics.tolist(),
-                "feature_config": config.feature_config.__dict__,
+                "feature_config": self._feature_config.__dict__,
                 "pose_config": config.pose_config.__dict__,
+                "determinism": self._determinism.metadata(),
             },
         )
         self.trajectory = self.data_store.create_accumulator("slam_trajectory")
@@ -143,6 +159,16 @@ class SLAMSystem:
         self._frame_id = 0
         self._feature_control_config = config.feature_control
         self._tracking_control_config = config.tracking_control
+        if self._feature_control_config is not None:
+            self._feature_control_config = replace(
+                self._feature_control_config,
+                deterministic_seed=self._determinism.seed_for("feature_control"),
+            )
+        if self._tracking_control_config is not None:
+            self._tracking_control_config = replace(
+                self._tracking_control_config,
+                deterministic_seed=self._determinism.seed_for("tracking_control"),
+            )
         self._keyframe_manager = KeyframeManager(
             window_size=config.keyframe_window_size,
             min_translation=config.keyframe_min_translation,
@@ -298,10 +324,16 @@ class SLAMSystem:
     def run_stream_async(self, frames: Iterable[FrameLike | tuple[np.ndarray, float]]) -> SLAMRunResult:
         """Process frames with asynchronous feature extraction and deterministic ordering."""
 
-        control_config = self._feature_control_config or FeatureControlConfig(enabled=True)
-        tracking_config = self._tracking_control_config or TrackingControlConfig(enabled=True)
+        control_config = self._feature_control_config or FeatureControlConfig(
+            enabled=True,
+            deterministic_seed=self._determinism.seed_for("feature_control"),
+        )
+        tracking_config = self._tracking_control_config or TrackingControlConfig(
+            enabled=True,
+            deterministic_seed=self._determinism.seed_for("tracking_control"),
+        )
         feature_plane = FeatureControlPlane(
-            feature_config=self.config.feature_config,
+            feature_config=self._feature_config,
             control_config=control_config,
         )
         control_plane = TrackingControlPlane(feature_plane, config=tracking_config)
@@ -557,7 +589,7 @@ class SLAMSystem:
         if not self.config.enable_telemetry:
             return _NullTelemetrySink()
         telemetry_path = self.data_store.telemetry_path(self.config.telemetry_name)
-        return RunTelemetryRecorder(telemetry_path)
+        return RunTelemetryRecorder(telemetry_path, determinism=self._determinism.metadata())
 
     def _maybe_add_keyframe(
         self,

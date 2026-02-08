@@ -19,6 +19,7 @@ def test_create_run_artifacts_with_subdir(tmp_path: Path) -> None:
         run_id="unit_test",
         config_path=config_path,
         config_hash="abc123",
+        seed=3,
         use_subdir=True,
     )
 
