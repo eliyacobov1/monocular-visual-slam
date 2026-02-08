@@ -352,6 +352,18 @@ class RunDataStore:
         LOGGER.info("Saved frame diagnostics '%s' to %s", bundle.name, diagnostics_path)
         return diagnostics_path
 
+    def save_control_plane_report(self, name: str, payload: Mapping[str, Any]) -> Path:
+        if not name:
+            raise ValueError("Control-plane report name must be non-empty")
+        report_path = self._telemetry_dir / f"{sanitize_artifact_name(name)}.json"
+        try:
+            report_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        except OSError as exc:
+            LOGGER.exception("Failed to write control-plane report '%s'", name)
+            raise RuntimeError("Failed to write control-plane report") from exc
+        LOGGER.info("Saved control-plane report '%s' to %s", name, report_path)
+        return report_path
+
     def load_metrics(self, name: str) -> MetricsBundle:
         metrics_path = self._metrics_dir / f"{sanitize_artifact_name(name)}.json"
         if not metrics_path.exists():

@@ -13,6 +13,7 @@ from typing import Iterable, Iterator, Literal
 import cv2
 import numpy as np
 
+from control_plane_hub import StageHealthSnapshot
 from data_persistence import P2Quantile
 from feature_pipeline import FeaturePipelineConfig, build_feature_pipeline
 from ingestion_control_plane import (
@@ -339,6 +340,13 @@ class FeatureControlPlane:
         self._reorder = DeterministicReorderBuffer(self._config.reorder_buffer_size)
         self._events: list[FeatureControlEvent] = []
         self._lock = threading.Lock()
+        self._submitted = 0
+        self._completed = 0
+        self._inflight = 0
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._errors = 0
+        self._breaker_opens = 0
         self._inflight_sem = threading.Semaphore(self._config.max_inflight)
         self._executor = self._build_executor()
         self._started = False
@@ -371,11 +379,27 @@ class FeatureControlPlane:
                 )
             )
 
+    def _record_completion(self, result: FeatureWorkerResult) -> None:
+        with self._lock:
+            self._completed += 1
+            self._inflight = max(self._inflight - 1, 0)
+            if result.cache_hit:
+                self._cache_hits += 1
+            else:
+                self._cache_misses += 1
+            if result.error:
+                self._errors += 1
+                if result.error == "circuit_breaker_open":
+                    self._breaker_opens += 1
+
     def submit(self, *, seq_id: int, timestamp: float, frame: np.ndarray) -> None:
         if self._closed:
             raise RuntimeError("Feature control plane is closed")
         if not self._inflight_sem.acquire(timeout=self._config.backpressure_timeout_s):
             raise BackpressureTimeout("Timed out waiting for feature slot")
+        with self._lock:
+            self._submitted += 1
+            self._inflight += 1
         cache_key = _hash_frame(frame)
         cached = self._cache.get(cache_key)
         if cached is not None:
@@ -393,6 +417,10 @@ class FeatureControlPlane:
                     error=None,
                 )
             )
+            with self._lock:
+                self._cache_hits += 1
+                self._completed += 1
+                self._inflight -= 1
             self._inflight_sem.release()
             return
         task = FeatureTask(
@@ -422,6 +450,7 @@ class FeatureControlPlane:
                     error=str(exc),
                 )
                 LOGGER.exception("Feature worker failed")
+            self._record_completion(result)
             self._result_queue.put(result)
             self._inflight_sem.release()
 
@@ -556,6 +585,41 @@ class FeatureControlPlane:
 
     def telemetry_summary(self) -> FeatureTelemetrySummary:
         return self._telemetry.summary()
+
+    def health_snapshot(self) -> StageHealthSnapshot:
+        queue_depth = self._result_queue.size
+        queue_capacity = self._result_queue.capacity
+        with self._lock:
+            breaker_state = self._breaker.state
+            if breaker_state == "open":
+                state = "tripped"
+            elif breaker_state == "half_open":
+                state = "recovering"
+            elif self._errors > 0:
+                state = "degraded"
+            else:
+                state = "healthy"
+            metrics = {
+                "queue_depth_ratio": 0.0 if queue_capacity == 0 else queue_depth / queue_capacity,
+                "inflight_ratio": 0.0
+                if self._config.max_inflight == 0
+                else self._inflight / self._config.max_inflight,
+            }
+            counters = {
+                "submitted": self._submitted,
+                "completed": self._completed,
+                "inflight": self._inflight,
+                "cache_hits": self._cache_hits,
+                "cache_misses": self._cache_misses,
+                "errors": self._errors,
+                "breaker_opens": self._breaker_opens,
+            }
+        return StageHealthSnapshot(
+            stage="feature",
+            state=state,
+            metrics=metrics,
+            counters=counters,
+        )
 
     def events(self) -> tuple[FeatureControlEvent, ...]:
         with self._lock:

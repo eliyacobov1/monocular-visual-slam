@@ -12,6 +12,7 @@ from typing import Iterable, Iterator, Literal
 
 import numpy as np
 
+from control_plane_hub import StageHealthSnapshot
 from data_persistence import P2Quantile
 from feature_control_plane import FeatureControlPlane, FeatureResult
 from ingestion_control_plane import BackpressureTimeout, CircuitBreaker, CircuitBreakerConfig
@@ -265,6 +266,11 @@ class TrackingControlPlane:
         self._ready_results: deque[TrackingFrameResult] = deque()
         self._closed = False
         self._lock = threading.Lock()
+        self._submitted = 0
+        self._processed = 0
+        self._dropped = 0
+        self._orphan_results = 0
+        self._errors = 0
 
     @property
     def state(self) -> TrackingState:
@@ -290,6 +296,8 @@ class TrackingControlPlane:
 
     def _emit_drop(self, payload: FramePayload, reason: str) -> None:
         total_wait_s = time.perf_counter() - payload.enqueued_at_s
+        with self._lock:
+            self._dropped += 1
         self._ready_results.append(
             TrackingFrameResult(
                 seq_id=payload.seq_id,
@@ -310,6 +318,8 @@ class TrackingControlPlane:
     def submit_frame(self, *, seq_id: int, timestamp: float, frame_gray: np.ndarray) -> None:
         if self._closed:
             raise RuntimeError("Tracking control plane is closed")
+        with self._lock:
+            self._submitted += 1
         if not self._breaker.allow():
             payload = FramePayload(
                 seq_id=int(seq_id),
@@ -341,6 +351,8 @@ class TrackingControlPlane:
     def _consume_feature_result(self, result: FeatureResult) -> None:
         payload = self._buffer.pop(result.seq_id)
         if payload is None:
+            with self._lock:
+                self._orphan_results += 1
             self._record_event(
                 "orphan_result",
                 "Received feature result for unknown frame",
@@ -351,8 +363,12 @@ class TrackingControlPlane:
         self._telemetry.update(total_wait_s, result.queue_wait_s)
         if result.error:
             self._breaker.record_failure()
+            with self._lock:
+                self._errors += 1
         else:
             self._breaker.record_success()
+        with self._lock:
+            self._processed += 1
         self._ready_results.append(
             TrackingFrameResult(
                 seq_id=result.seq_id,
@@ -394,6 +410,36 @@ class TrackingControlPlane:
 
     def telemetry_summary(self) -> TrackingTelemetrySummary:
         return self._telemetry.summary()
+
+    def health_snapshot(self) -> StageHealthSnapshot:
+        with self._lock:
+            breaker_state = self._breaker.state
+            if breaker_state == "open":
+                state = "tripped"
+            elif breaker_state == "half_open":
+                state = "recovering"
+            elif self._errors > 0:
+                state = "degraded"
+            else:
+                state = "healthy"
+            metrics = {
+                "pending_frames": float(self._buffer.size),
+                "buffer_capacity": float(self._buffer.capacity),
+                "ready_results": float(len(self._ready_results)),
+            }
+            counters = {
+                "submitted": self._submitted,
+                "processed": self._processed,
+                "dropped": self._dropped,
+                "orphan_results": self._orphan_results,
+                "errors": self._errors,
+            }
+        return StageHealthSnapshot(
+            stage="tracking",
+            state=state,
+            metrics=metrics,
+            counters=counters,
+        )
 
     def events(self) -> tuple[TrackingEvent, ...]:
         return tuple(self._event_log.snapshot())
