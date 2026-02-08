@@ -36,10 +36,11 @@ class TelemetrySink(Protocol):
 class RunTelemetryRecorder:
     """Record telemetry events to a JSON file for a run."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, determinism: Mapping[str, object] | None = None) -> None:
         self._path = path
         self._lock = threading.Lock()
         self._events: list[TelemetryEvent] = []
+        self._determinism = dict(determinism or {})
 
     @property
     def path(self) -> Path:
@@ -56,6 +57,7 @@ class RunTelemetryRecorder:
     def _write_locked(self) -> None:
         payload = {
             "recorded_at": _timestamp(),
+            "determinism": dict(self._determinism),
             "events": [
                 {
                     "name": evt.name,

@@ -25,6 +25,7 @@ def create_run_artifacts(
     run_id: str,
     config_path: Path,
     config_hash: str,
+    seed: int,
     use_subdir: bool,
 ) -> RunArtifacts:
     created_at = _timestamp()
@@ -39,6 +40,7 @@ def create_run_artifacts(
         "created_at": created_at,
         "config_path": str(config_path),
         "config_hash": config_hash,
+        "seed": int(seed),
         "run_dir": str(run_dir),
     }
     metadata_path = run_dir / "run_metadata.json"

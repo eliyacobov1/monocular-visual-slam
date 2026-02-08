@@ -29,6 +29,7 @@ class RunMetadata:
     created_at: str
     config_path: Path
     config_hash: str
+    seed: int
     resolved_config_path: Path | None
 
 
@@ -226,6 +227,7 @@ class RunDataStore:
         run_id: str,
         config_path: Path,
         config_hash: str,
+        seed: int,
         use_subdir: bool,
         resolved_config: Mapping[str, Any] | None = None,
     ) -> "RunDataStore":
@@ -235,6 +237,7 @@ class RunDataStore:
                 run_id=run_id,
                 config_path=config_path,
                 config_hash=config_hash,
+                seed=seed,
                 use_subdir=use_subdir,
             )
             resolved_config_path = None
@@ -252,6 +255,7 @@ class RunDataStore:
             created_at=artifacts.created_at,
             config_path=config_path,
             config_hash=config_hash,
+            seed=int(seed),
             resolved_config_path=resolved_config_path,
         )
         return cls(metadata)
@@ -265,12 +269,16 @@ class RunDataStore:
         self._validate_trajectory(bundle)
         filename = f"{sanitize_artifact_name(bundle.name)}.npz"
         path = self._trajectory_dir / filename
+        determinism_payload = json.dumps(self._determinism_payload(), sort_keys=True)
         try:
             np.savez_compressed(
                 path,
                 poses=bundle.poses,
                 timestamps=bundle.timestamps,
-                frame_ids=bundle.frame_ids if bundle.frame_ids is not None else np.array([], dtype=np.int64),
+                frame_ids=bundle.frame_ids
+                if bundle.frame_ids is not None
+                else np.array([], dtype=np.int64),
+                determinism=np.array([determinism_payload], dtype=object),
             )
         except OSError as exc:
             LOGGER.exception("Failed to write trajectory '%s'", bundle.name)
@@ -308,6 +316,7 @@ class RunDataStore:
             "name": bundle.name,
             "recorded_at": bundle.recorded_at,
             "metrics": bundle.metrics,
+            "determinism": self._determinism_payload(),
         }
         try:
             metrics_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -326,6 +335,7 @@ class RunDataStore:
         payload = {
             "name": bundle.name,
             "recorded_at": bundle.recorded_at,
+            "determinism": self._determinism_payload(),
             "entries": [
                 {
                     "frame_id": entry.frame_id,
@@ -356,8 +366,13 @@ class RunDataStore:
         if not name:
             raise ValueError("Control-plane report name must be non-empty")
         report_path = self._telemetry_dir / f"{sanitize_artifact_name(name)}.json"
+        report_payload = dict(payload)
+        report_payload.setdefault("determinism", self._determinism_payload())
         try:
-            report_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            report_path.write_text(
+                json.dumps(report_payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
         except OSError as exc:
             LOGGER.exception("Failed to write control-plane report '%s'", name)
             raise RuntimeError("Failed to write control-plane report") from exc
@@ -459,6 +474,15 @@ class RunDataStore:
     def telemetry_path(self, name: str) -> Path:
         safe_name = sanitize_artifact_name(name)
         return self._telemetry_dir / f"{safe_name}.json"
+
+    def determinism_payload(self) -> dict[str, object]:
+        return self._determinism_payload()
+
+    def _determinism_payload(self) -> dict[str, object]:
+        return {
+            "seed": int(self.metadata.seed),
+            "config_hash": self.metadata.config_hash,
+        }
 
     @staticmethod
     def _sanitize_name(name: str) -> str:

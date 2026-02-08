@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ import cv2
 import numpy as np
 
 from dataset_validation import validate_kitti
+from deterministic_registry import build_registry
 from kitti_dataset import KittiSequence
 from slam_api import SLAMRunResult, SLAMSystem, SLAMSystemConfig
 from slam_runner import load_pipeline_config
@@ -30,13 +30,10 @@ class RelocalizationDemoConfig:
     output_dir: Path
     run_id: str
     pipeline_config: Path
+    seed: int
     use_run_subdir: bool
     loss_frame: int
     max_frames: int | None
-
-
-def _hash_config(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _load_telemetry(path: Path) -> list[dict[str, Any]]:
@@ -115,7 +112,9 @@ def run_demo(config: RelocalizationDemoConfig) -> dict[str, Any]:
         LOGGER.warning("Dataset validation completed with warnings")
 
     feature_config, pose_config, feature_control_config = load_pipeline_config(config.pipeline_config)
-    config_hash = _hash_config(config.pipeline_config)
+    registry = build_registry(seed=config.seed, config_path=config.pipeline_config)
+    registry.apply_global_seed()
+    config_hash = registry.config.config_hash
 
     sequence_loader = KittiSequence(config.root, config.sequence, camera=config.camera)
     intrinsics = sequence_loader.camera_intrinsics()
@@ -127,6 +126,7 @@ def run_demo(config: RelocalizationDemoConfig) -> dict[str, Any]:
         output_dir=config.output_dir,
         config_path=config.pipeline_config,
         config_hash=config_hash,
+        seed=config.seed,
         intrinsics=intrinsics,
         feature_config=feature_config,
         pose_config=pose_config,
@@ -171,6 +171,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", default="reports", help="Output directory")
     parser.add_argument("--run_id", default="relocalization_demo", help="Run identifier")
     parser.add_argument("--config", required=True, help="Path to pipeline config JSON")
+    parser.add_argument("--seed", type=int, default=0, help="Deterministic seed")
     parser.add_argument(
         "--loss_frame",
         type=int,
@@ -210,6 +211,7 @@ def main() -> None:
         output_dir=Path(args.output_dir),
         run_id=args.run_id,
         pipeline_config=Path(args.config),
+        seed=args.seed,
         use_run_subdir=args.use_run_subdir,
         loss_frame=args.loss_frame,
         max_frames=args.max_frames,

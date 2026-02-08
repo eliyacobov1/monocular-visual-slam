@@ -6,6 +6,9 @@ control planes for ingestion, feature extraction, tracking, optimization, and
 evaluation. The platform must be interview-ready for Staff/Principal roles:
 modular, observable, and benchmark-gated.
 
+## Project Readiness
+- Status: In progress (Sprint 1 global determinism contract complete).
+
 ## Non-Negotiables
 1. **Determinism everywhere**: fixed seeds, reproducible ordering, stable artifacts.
 2. **Accuracy over speed**: prioritize pose stability and loop-closure fidelity.

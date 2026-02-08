@@ -4,16 +4,16 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
 import cv2
 
 from dataset_validation import validate_kitti
+from deterministic_registry import build_registry
 from frame_stream import FrameStream, FrameStreamConfig
 from ingestion_pipeline import (
     AsyncIngestionPipeline,
@@ -29,10 +29,6 @@ from slam_api import SLAMSystem, SLAMSystemConfig, SLAMRunResult
 from tracking_control_plane import TrackingControlConfig
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _hash_config(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _filter_config(payload: dict[str, Any], config_type: type) -> dict[str, Any]:
@@ -83,6 +79,7 @@ def run_kitti_sequence(
     output_dir: Path,
     run_id: str,
     config_path: Path,
+    seed: int,
     use_run_subdir: bool = True,
     max_frames: int | None = None,
     stream_frames: bool = False,
@@ -115,7 +112,18 @@ def run_kitti_sequence(
     feature_config, pose_config, feature_control_config, tracking_control_config = load_pipeline_config(
         config_path
     )
-    config_hash = _hash_config(config_path)
+    registry = build_registry(seed=seed, config_path=config_path)
+    registry.apply_global_seed()
+    config_hash = registry.config.config_hash
+    feature_config = replace(
+        feature_config,
+        deterministic_seed=registry.seed_for("feature_pipeline"),
+    )
+    if feature_control_config is not None:
+        feature_control_config = replace(
+            feature_control_config,
+            deterministic_seed=registry.seed_for("feature_control"),
+        )
 
     sequence_loader = KittiSequence(root, sequence, camera=camera)
     intrinsics = sequence_loader.camera_intrinsics()
@@ -134,6 +142,7 @@ def run_kitti_sequence(
         output_dir=output_dir,
         config_path=config_path,
         config_hash=config_hash,
+        seed=seed,
         intrinsics=intrinsics,
         feature_config=feature_config,
         pose_config=pose_config,
@@ -247,6 +256,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", default="reports", help="Output directory")
     parser.add_argument("--run_id", default="slam_run", help="Run identifier")
     parser.add_argument("--config", required=True, help="Path to pipeline config JSON")
+    parser.add_argument("--seed", type=int, default=0, help="Deterministic seed")
     parser.add_argument("--max_frames", type=int, default=None, help="Optional frame cap")
     parser.add_argument(
         "--use_run_subdir",
@@ -374,6 +384,7 @@ def main() -> None:
         output_dir=Path(args.output_dir),
         run_id=args.run_id,
         config_path=Path(args.config),
+        seed=args.seed,
         use_run_subdir=args.use_run_subdir,
         max_frames=args.max_frames,
         stream_frames=args.stream_frames,
