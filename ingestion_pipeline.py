@@ -14,6 +14,7 @@ from typing import Callable, Iterable, Iterator, Literal, Optional, TypeVar
 import cv2
 import numpy as np
 
+from control_plane_hub import StageHealthSnapshot
 from frame_stream import FramePacket
 from ingestion_control_plane import (
     AdaptiveBoundedQueue,
@@ -242,6 +243,50 @@ class AsyncIngestionPipeline(Iterable[FramePacket]):
     @property
     def failures(self) -> IngestionFailureReport:
         return self._failures
+
+    def health_snapshot(self) -> StageHealthSnapshot:
+        breaker_state = self._breaker.state
+        if breaker_state == "open":
+            state = "tripped"
+        elif breaker_state == "half_open":
+            state = "recovering"
+        elif self._error is not None:
+            state = "degraded"
+        elif self._stats.read_failures or self._stats.decode_exceptions or self._stats.output_backpressure:
+            state = "degraded"
+        else:
+            state = "healthy"
+        entry_ratio = 0.0 if self._entry_queue.capacity == 0 else self._entry_queue.size / self._entry_queue.capacity
+        output_ratio = (
+            0.0 if self._output_queue.capacity == 0 else self._output_queue.size / self._output_queue.capacity
+        )
+        inflight_ratio = (
+            0.0 if self._config.inflight_limit == 0 else self._inflight_count() / self._config.inflight_limit
+        )
+        metrics = {
+            "entry_queue_depth_ratio": entry_ratio,
+            "output_queue_depth_ratio": output_ratio,
+            "inflight_ratio": inflight_ratio,
+            "max_entry_queue_depth": float(self._stats.max_entry_queue_depth),
+            "max_output_queue_depth": float(self._stats.max_output_queue_depth),
+        }
+        counters = {
+            "enqueued_entries": self._stats.enqueued_entries,
+            "dequeued_entries": self._stats.dequeued_entries,
+            "dropped_entries": self._stats.dropped_entries,
+            "decoded_frames": self._stats.decoded_frames,
+            "dropped_frames": self._stats.dropped_frames,
+            "read_failures": self._stats.read_failures,
+            "decode_exceptions": self._stats.decode_exceptions,
+            "decode_retries": self._stats.decode_retries,
+            "output_backpressure": self._stats.output_backpressure,
+            "ordering_forced_flushes": self._ordering_buffer.forced_flushes,
+            "circuit_breaker_opens": self._telemetry.circuit_breaker_opens,
+        }
+        return StageHealthSnapshot(stage="ingestion", state=state, metrics=metrics, counters=counters)
+
+    def events(self) -> tuple[StageEvent, ...]:
+        return tuple(self._telemetry.event_log.snapshot())
 
     def start(self) -> None:
         if self._started:

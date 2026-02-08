@@ -31,6 +31,7 @@
 1. **Control-plane supervisor**
    - Implement a unified supervisor that ingests health snapshots and events from all stages.
    - Add cross-stage state transitions (healthy → degraded → tripped → recovering) with recovery policies.
+   - Status: Complete
 2. **Backpressure + circuit-breaker escalation**
    - Introduce cross-stage propagation of backpressure thresholds and circuit-breaker trip logic.
    - Add recovery queues with deterministic drain order and bounded memory.
