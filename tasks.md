@@ -39,6 +39,7 @@
 3. **Failure injection + chaos harness**
    - Build deterministic failure injection (timeouts, dropped frames, solver stalls) and validate recovery.
    - Add stress benchmarks for supervisor scalability and race safety.
+   - Status: Complete
 
 **Success criteria**
 - Unified supervisor emits CI-ready health snapshots and state transitions.
