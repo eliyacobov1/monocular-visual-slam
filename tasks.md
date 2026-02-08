@@ -1,32 +1,27 @@
 # Strategic Roadmap (Principal-Grade SLAM Platform)
 
-## Milestone A: Tracking Control Plane (Deterministic Supervision)
-- Pending-frame buffer with TTL enforcement and deterministic drop policies.
-- Tracking telemetry (end-to-end wait + feature queue wait) for CI gating.
-- Circuit-breaker events and recovery timelines in structured logs.
-- Stress and race-condition coverage for tracking supervision.
+## Milestone 1: Unified Control-Plane Orchestration
+- Deterministic event hub spanning ingestion, features, tracking, optimization.
+- Health snapshots with CI-ready JSON and stable digests.
+- Cross-stage backpressure propagation and recovery state transitions.
+- Stress/race harnesses validating thread safety and ordering stability.
 
-## Milestone B: Control-Plane Orchestration (Ingestion + Tracking + Optimization)
-- Unified event bus with stage-level state machines and health dashboards.
-- Cross-stage backpressure propagation and deterministic drain policies.
-- Supervisor stress harnesses for multi-stage contention.
+## Milestone 2: Optimization Resilience & Regression Gates
+- Solver snapshots with per-iteration diagnostics and digest tracking.
+- Block-sparse solver guardrails and convergence telemetry.
+- Regression gates for cost/residual drift and solver iteration spikes.
 
-## Milestone C: Optimization Resilience (Graph + Solver)
-- Solver snapshots with per-iteration diagnostics and regression gates.
-- Block-sparse preconditioners and CG convergence telemetry.
-- Multi-solver benchmarking for robustness under outliers.
+## Milestone 3: Telemetry Intelligence & SLO Dashboards
+- Drift analytics across run baselines with quantile gates.
+- Telemetry rollups for ingestion/feature/tracking/optimization pipelines.
+- Time-series export for SLO dashboards and CI publishing.
 
-## Milestone D: Telemetry Intelligence (Drift + SLOs)
-- Drift dashboards with quantile regression gates per stage.
-- CI-friendly telemetry bundles for automated gating.
-- Time-series exports for comparative evaluation.
+## Milestone 4: Recovery & Loop-Closure Hardening
+- Deterministic relocalization recovery packs with failure injection.
+- Loop-closure verification datasets + geo-consistency scoring.
+- Map integrity validation for long-horizon runs.
 
-## Milestone E: Relocalization + Loop Closure Hardening
-- Deterministic recovery benchmarks and loop-closure verification packs.
-- Failure injection suites for relocalization confidence.
-- Geo-consistency scoring for persistent maps.
-
-## Milestone F: Multi-Sensor Expansion Blueprint
+## Milestone 5: Multi-Sensor Expansion Blueprint
 - IMU/GPS fusion interfaces with deterministic synchronization scaffolding.
-- Multi-camera ingestion staging and calibration hooks.
-- C++/CUDA acceleration plan for high-rate datasets.
+- Multi-camera ingestion staging + calibration hooks.
+- Acceleration plan (C++/CUDA, SIMD hot paths, memory pools).

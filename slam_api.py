@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 import cv2
 import numpy as np
 
+from control_plane_hub import ControlPlaneHub, ControlPlaneStageAdapter
 from data_persistence import (
     FrameDiagnosticsEntry,
     RunDataStore,
@@ -65,6 +66,8 @@ class SLAMSystemConfig:
     enable_telemetry: bool = True
     telemetry_name: str = "slam_telemetry"
     telemetry_sink: TelemetrySink | None = None
+    enable_control_plane_report: bool = True
+    control_plane_report_name: str = "control_plane_report"
     keyframe_window_size: int = 5
     keyframe_min_translation: float = 0.1
     keyframe_min_rotation_deg: float = 5.0
@@ -103,6 +106,7 @@ class SLAMRunResult:
     metrics_path: Path
     diagnostics_path: Path
     telemetry_path: Path | None
+    control_plane_report_path: Path | None
     frame_diagnostics: tuple[FrameDiagnostics, ...]
     map_snapshot_path: Path | None
     map_stats: MapBuildStats | None
@@ -152,6 +156,7 @@ class SLAMSystem:
         self._map_dirty = False
         self._relocalizer_snapshot: PersistentMapSnapshot | None = None
         self._relocalizer: MapRelocalizer | None = None
+        self._control_plane_report_path: Path | None = None
 
     def process_frame(self, frame: np.ndarray, timestamp: float) -> np.ndarray:
         if frame.ndim not in (2, 3):
@@ -329,6 +334,26 @@ class SLAMSystem:
                 self._handle_tracking_result(result)
         finally:
             control_plane.close()
+            if self.config.enable_control_plane_report:
+                hub = ControlPlaneHub(
+                    [
+                        ControlPlaneStageAdapter(
+                            name="feature",
+                            health_snapshot=feature_plane.health_snapshot,
+                            events=feature_plane.events,
+                        ),
+                        ControlPlaneStageAdapter(
+                            name="tracking",
+                            health_snapshot=control_plane.health_snapshot,
+                            events=control_plane.events,
+                        ),
+                    ]
+                )
+                report = hub.generate_report()
+                self._control_plane_report_path = self.data_store.save_control_plane_report(
+                    self.config.control_plane_report_name,
+                    report.asdict(),
+                )
         return self.finalize_run()
 
     def finalize_run(self) -> SLAMRunResult:
@@ -371,6 +396,7 @@ class SLAMSystem:
             metrics_path=metrics_path,
             diagnostics_path=diagnostics_path,
             telemetry_path=self.telemetry.path if isinstance(self.telemetry, RunTelemetryRecorder) else None,
+            control_plane_report_path=self._control_plane_report_path,
             frame_diagnostics=tuple(self.frame_diagnostics),
             map_snapshot_path=map_snapshot_path,
             map_stats=map_stats,

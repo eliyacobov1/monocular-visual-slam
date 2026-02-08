@@ -11,6 +11,7 @@ from typing import Iterable
 
 import numpy as np
 
+from control_plane_hub import StageHealthSnapshot
 from data_persistence import P2Quantile
 from graph_optimization import (
     IterationDiagnostics,
@@ -179,6 +180,16 @@ class OptimizationSupervisor:
         self._config = config or OptimizationControlConfig()
         self._event_log = DeterministicEventLog(self._config.event_log_capacity)
         self._random = random.Random(self._config.seed)
+        self._lock = threading.Lock()
+        self._run_count = 0
+        self._success_count = 0
+        self._failure_count = 0
+        self._last_success: bool | None = None
+        self._last_attempts = 0
+        self._last_duration_s: float | None = None
+        self._last_snapshot_digest: str | None = None
+        self._last_solver_name: str | None = None
+        self._last_cost: float | None = None
 
     @property
     def event_log(self) -> DeterministicEventLog:
@@ -298,6 +309,18 @@ class OptimizationSupervisor:
             started_at_s=started_at_s,
             finished_at_s=finished_at_s,
         )
+        with self._lock:
+            self._run_count += 1
+            if last_result.success:
+                self._success_count += 1
+            else:
+                self._failure_count += 1
+            self._last_success = last_result.success
+            self._last_attempts = attempts
+            self._last_duration_s = report.duration_s
+            self._last_snapshot_digest = report.snapshot_digest
+            self._last_solver_name = solver_name
+            self._last_cost = last_result.cost
         return list(x_opt), last_result, report
 
     def _record_event(self, *, stage: str, event_type: str, message: str, metadata: dict[str, object]) -> None:
@@ -308,6 +331,33 @@ class OptimizationSupervisor:
             metadata=metadata,
         )
         self._event_log.record(event)
+
+    def health_snapshot(self) -> StageHealthSnapshot:
+        with self._lock:
+            if self._last_success is None:
+                state = "idle"
+            elif self._last_success:
+                state = "healthy"
+            elif self._last_attempts >= self._config.max_attempts:
+                state = "tripped"
+            else:
+                state = "degraded"
+            metrics = {
+                "last_duration_s": float(self._last_duration_s or 0.0),
+                "last_cost": float(self._last_cost or 0.0),
+                "last_attempts": float(self._last_attempts),
+            }
+            counters = {
+                "runs": self._run_count,
+                "successes": self._success_count,
+                "failures": self._failure_count,
+            }
+        return StageHealthSnapshot(
+            stage="optimization",
+            state=state,
+            metrics=metrics,
+            counters=counters,
+        )
 
 
 def _summarize_telemetry(

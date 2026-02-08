@@ -1,10 +1,10 @@
-# Agent Instructions (Principal-Grade SLAM Overhaul v3)
+# Agent Instructions (Principal-Grade SLAM Overhaul v4)
 
 ## Mission
 Deliver a deterministic, telemetry-first SLAM stack with production-grade
-control planes for ingestion, tracking, optimization, and evaluation. The
-platform must be interview-ready for Staff/Principal roles: modular,
-observable, and benchmark-gated.
+control planes for ingestion, feature extraction, tracking, optimization, and
+evaluation. The platform must be interview-ready for Staff/Principal roles:
+modular, observable, and benchmark-gated.
 
 ## Non-Negotiables
 1. **Determinism everywhere**: fixed seeds, reproducible ordering, stable artifacts.
@@ -14,30 +14,30 @@ observable, and benchmark-gated.
 5. **Modularity**: swappable backends for optimization + feature extraction.
 
 ## Architecture Priorities
-- Tracking must be supervised with deterministic ordering, TTL enforcement, and
-  drop governance.
-- Feature extraction must be supervised with deterministic ordering, caching,
-  and async concurrency support.
-- Optimization must expose solver snapshots, per-iteration diagnostics, and
-  regression thresholds.
-- Ingestion must isolate failures with bounded queues, retries, and event logs.
-- Evaluation must produce ATE/RPE + telemetry drift reports for CI gating.
+- Unified control-plane health reporting across ingestion, feature extraction,
+  tracking, and optimization.
+- Deterministic event ordering with bounded memory and stable digests.
+- Stage health snapshots that are suitable for CI gating.
+- Evaluations must publish ATE/RPE + drift reports with deterministic formats.
+- Every benchmark must emit runtime + memory delta.
 
 ## Code Quality Expectations
 - Strong typing with dataclass configs.
 - Structured logging only; no print debugging.
 - Clear module boundaries: ingestion, features, tracking, optimization,
-  evaluation, telemetry.
+  evaluation, telemetry, orchestration.
 - Deterministic outputs for every benchmark and report.
 
 ## Roadmap Milestones (High-Level)
-- **Tracking Control Plane**: TTL-backed frame buffers, drop telemetry, circuit
-  breaker supervision.
-- **Optimization Resilience**: block-sparse solver guardrails + solver snapshots.
-- **Telemetry Intelligence**: drift evaluation, SLO dashboards, quantile exports.
-- **Control-Plane Orchestration**: ingestion + tracking + optimization
-  supervisors with unified events.
-- **Multi-Sensor Expansion**: IMU/GPS hooks and multi-camera synchronization.
+- **Control-Plane Orchestration**: multi-stage hub with deterministic event
+  ordering, health snapshots, and state dashboards.
+- **Optimization Resilience**: solver snapshots, per-iteration diagnostics, and
+  regression gates for CI.
+- **Telemetry Intelligence**: drift analytics and SLO dashboards with CI export
+  bundles.
+- **Recovery Hardening**: relocalization and loop-closure validation suites.
+- **Multi-Sensor Expansion**: IMU/GPS hooks, multi-camera sync, acceleration
+  plan.
 
 ## Workflow Notes
 - Update docs when pipeline behavior changes.
