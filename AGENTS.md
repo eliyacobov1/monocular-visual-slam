@@ -43,3 +43,20 @@ modular, observable, and benchmark-gated.
 - Update docs when pipeline behavior changes.
 - Add tests/benchmarks for any new control-plane or optimization capability.
 - Preserve deterministic behavior in evaluations and artifact outputs.
+
+## Definition of Done (Senior Interview Ready)
+- End-to-end deterministic runs with global seed/config injection and byte-stable artifacts.
+- Unified control-plane supervisor with cross-stage state transitions, recovery policies,
+  and CI-ready health snapshots.
+- Deterministic event ordering and stable digests across ingestion, features, tracking,
+  optimization, and evaluation outputs.
+- Optimization and loop-closure pipelines emit per-iteration diagnostics, snapshots,
+  and regression gates for stability and drift.
+- Telemetry intelligence publishes streaming summaries, drift findings, and SLO-ready
+  bundles for every run.
+- Benchmarks enforce runtime/memory budgets with explicit regression gates and
+  deterministic reports.
+- Recovery hardening validated via deterministic failure injection and relocalization
+  regression suites.
+- Documentation and runbooks updated to reflect pipeline control-plane behavior and
+  CI expectations.
