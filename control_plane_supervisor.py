@@ -30,6 +30,23 @@ DEFAULT_ERROR_KEYWORDS = (
     "dropped",
 )
 
+DEFAULT_BACKPRESSURE_RATIO_KEYS = (
+    "entry_queue_depth_ratio",
+    "output_queue_depth_ratio",
+    "queue_depth_ratio",
+    "inflight_ratio",
+)
+
+DEFAULT_BACKPRESSURE_COUNTER_KEYS = (
+    "output_backpressure",
+    "backpressure_events",
+)
+
+DEFAULT_CIRCUIT_BREAKER_COUNTER_KEYS = (
+    "circuit_breaker_opens",
+    "breaker_opens",
+)
+
 
 @dataclass(frozen=True)
 class ControlPlaneSupervisorConfig:
@@ -46,6 +63,15 @@ class ControlPlaneSupervisorConfig:
     propagate_recovering: bool = True
     propagate_tripped: bool = True
     error_keywords: tuple[str, ...] = DEFAULT_ERROR_KEYWORDS
+    backpressure_ratio_threshold: float = 0.8
+    backpressure_ratio_trip_threshold: float = 0.95
+    backpressure_counter_threshold: int = 1
+    backpressure_counter_trip_threshold: int = 3
+    backpressure_ratio_keys: tuple[str, ...] = DEFAULT_BACKPRESSURE_RATIO_KEYS
+    backpressure_counter_keys: tuple[str, ...] = DEFAULT_BACKPRESSURE_COUNTER_KEYS
+    circuit_breaker_counter_keys: tuple[str, ...] = DEFAULT_CIRCUIT_BREAKER_COUNTER_KEYS
+    circuit_breaker_trip_threshold: int = 1
+    recovery_queue_capacity: int = 128
     clock: Callable[[], float] = time.time
 
     def __post_init__(self) -> None:
@@ -61,6 +87,22 @@ class ControlPlaneSupervisorConfig:
             raise ValueError("recovery_healthy_required must be positive")
         if self.degraded_healthy_required <= 0:
             raise ValueError("degraded_healthy_required must be positive")
+        if not 0.0 <= self.backpressure_ratio_threshold <= 1.0:
+            raise ValueError("backpressure_ratio_threshold must be within [0, 1]")
+        if not 0.0 <= self.backpressure_ratio_trip_threshold <= 1.0:
+            raise ValueError("backpressure_ratio_trip_threshold must be within [0, 1]")
+        if self.backpressure_ratio_trip_threshold < self.backpressure_ratio_threshold:
+            raise ValueError("backpressure_ratio_trip_threshold must be >= backpressure_ratio_threshold")
+        if self.backpressure_counter_threshold < 0:
+            raise ValueError("backpressure_counter_threshold must be non-negative")
+        if self.backpressure_counter_trip_threshold < 0:
+            raise ValueError("backpressure_counter_trip_threshold must be non-negative")
+        if self.backpressure_counter_trip_threshold < self.backpressure_counter_threshold:
+            raise ValueError("backpressure_counter_trip_threshold must be >= backpressure_counter_threshold")
+        if self.circuit_breaker_trip_threshold < 0:
+            raise ValueError("circuit_breaker_trip_threshold must be non-negative")
+        if self.recovery_queue_capacity <= 0:
+            raise ValueError("recovery_queue_capacity must be positive")
 
 
 @dataclass
@@ -72,6 +114,8 @@ class StageRuntimeState:
     consecutive_healthy: int = 0
     last_raw_state: str = "healthy"
     last_error_events: int = 0
+    last_backpressure_count: int = 0
+    last_circuit_breaker_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -83,6 +127,31 @@ class StageTransition:
     next_state: str
     reason: str
     timestamp_s: float
+
+
+@dataclass(frozen=True)
+class StageEscalation:
+    """Escalation derived from backpressure or circuit-breaker signals."""
+
+    stage: str
+    escalation_type: str
+    severity: str
+    reason: str
+    metrics: Mapping[str, float]
+    counters: Mapping[str, int]
+    timestamp_s: float
+
+
+@dataclass(frozen=True)
+class RecoveryAction:
+    """Deterministic recovery action queued for supervision."""
+
+    stage: str
+    action_type: str
+    severity: str
+    reason: str
+    queued_at_s: float
+    seq_id: int
 
 
 @dataclass(frozen=True)
@@ -109,6 +178,8 @@ class ControlPlaneSupervisorReport:
     global_state: str
     stage_statuses: tuple[SupervisorStageStatus, ...]
     transitions: tuple[StageTransition, ...]
+    escalations: tuple[StageEscalation, ...]
+    recovery_queue: tuple[RecoveryAction, ...]
     hub_report: ControlPlaneReport
     digest: str
 
@@ -120,7 +191,40 @@ class ControlPlaneSupervisorReport:
             "hub_report": self.hub_report.asdict(),
             "stages": [status.asdict() for status in self.stage_statuses],
             "transitions": [asdict(transition) for transition in self.transitions],
+            "escalations": [asdict(escalation) for escalation in self.escalations],
+            "recovery_queue": [asdict(action) for action in self.recovery_queue],
         }
+
+
+class RecoveryQueue:
+    """Deterministic recovery queue with bounded memory."""
+
+    def __init__(self, capacity: int) -> None:
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        self._capacity = capacity
+        self._queue: deque[RecoveryAction] = deque()
+
+    def enqueue(self, action: RecoveryAction) -> None:
+        if len(self._queue) >= self._capacity:
+            self._queue.popleft()
+        self._queue.append(action)
+
+    def ordered(self) -> tuple[RecoveryAction, ...]:
+        return tuple(sorted(self._queue, key=_recovery_sort_key))
+
+    def drain(self) -> tuple[RecoveryAction, ...]:
+        ordered = self.ordered()
+        self._queue.clear()
+        return ordered
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    @property
+    def size(self) -> int:
+        return len(self._queue)
 
 
 class ControlPlaneSupervisor:
@@ -135,6 +239,8 @@ class ControlPlaneSupervisor:
         self._config = config or ControlPlaneSupervisorConfig()
         self._hub = ControlPlaneHub(adapters)
         self._stage_states: dict[str, StageRuntimeState] = {}
+        self._recovery_queue = RecoveryQueue(self._config.recovery_queue_capacity)
+        self._recovery_seq = 0
 
     def update(self) -> ControlPlaneSupervisorReport:
         hub_report = self._hub.generate_report()
@@ -142,18 +248,25 @@ class ControlPlaneSupervisor:
         stage_snapshots = {snapshot.stage: snapshot for snapshot in hub_report.stage_snapshots}
         error_counts = self._count_error_events(hub_report)
         stage_states = self._initial_stage_states(stage_snapshots, error_counts)
+        stage_states, escalations = self._apply_escalations(stage_snapshots, stage_states, now_s)
         propagated_states = self._propagate_dependencies(stage_states)
         statuses, transitions = self._apply_recovery(stage_snapshots, propagated_states, error_counts, now_s)
         global_state = self._global_state(statuses)
-        digest = self._digest(hub_report, statuses, transitions, global_state)
+        recovery_queue = self._recovery_queue.ordered()
+        digest = self._digest(hub_report, statuses, transitions, escalations, recovery_queue, global_state)
         return ControlPlaneSupervisorReport(
             generated_at_s=now_s,
             global_state=global_state,
             stage_statuses=tuple(statuses),
             transitions=tuple(transitions),
+            escalations=tuple(escalations),
+            recovery_queue=recovery_queue,
             hub_report=hub_report,
             digest=digest,
         )
+
+    def drain_recovery_queue(self) -> tuple[RecoveryAction, ...]:
+        return self._recovery_queue.drain()
 
     def _count_error_events(self, report: ControlPlaneReport) -> dict[str, int]:
         windowed: dict[str, deque[bool]] = defaultdict(lambda: deque(maxlen=self._config.event_window))
@@ -201,6 +314,100 @@ class ControlPlaneSupervisor:
                     if propagated[stage] == "healthy":
                         propagated[stage] = "degraded"
         return propagated
+
+    def _apply_escalations(
+        self,
+        snapshots: Mapping[str, StageHealthSnapshot],
+        stage_states: dict[str, str],
+        now_s: float,
+    ) -> tuple[dict[str, str], list[StageEscalation]]:
+        escalations: list[StageEscalation] = []
+        updated_states = dict(stage_states)
+        for stage in sorted(snapshots.keys()):
+            snapshot = snapshots[stage]
+            runtime = self._stage_states.get(stage)
+            if runtime is None:
+                runtime = StageRuntimeState(state="healthy", last_transition_s=now_s)
+                self._stage_states[stage] = runtime
+            backpressure = self._evaluate_backpressure(snapshot, runtime, now_s)
+            circuit_breaker = self._evaluate_circuit_breaker(snapshot, runtime, now_s)
+            for escalation in (backpressure, circuit_breaker):
+                if escalation is None:
+                    continue
+                escalations.append(escalation)
+                updated_states[stage] = _merge_state(updated_states.get(stage, "healthy"), escalation.severity)
+                action = self._queue_recovery_action(escalation)
+                LOGGER.info(
+                    "control_plane_escalation stage=%s type=%s severity=%s reason=%s action_seq=%s",
+                    escalation.stage,
+                    escalation.escalation_type,
+                    escalation.severity,
+                    escalation.reason,
+                    action.seq_id,
+                )
+        return updated_states, escalations
+
+    def _evaluate_backpressure(
+        self,
+        snapshot: StageHealthSnapshot,
+        runtime: StageRuntimeState,
+        now_s: float,
+    ) -> StageEscalation | None:
+        ratio = _max_metric(snapshot.metrics, self._config.backpressure_ratio_keys)
+        counter = _sum_counters(snapshot.counters, self._config.backpressure_counter_keys)
+        delta = max(counter - runtime.last_backpressure_count, 0)
+        runtime.last_backpressure_count = counter
+        severity = None
+        reason_parts: list[str] = []
+        if ratio is not None:
+            if ratio >= self._config.backpressure_ratio_trip_threshold:
+                severity = "tripped"
+                reason_parts.append(f"ratio={ratio:.3f}")
+            elif ratio >= self._config.backpressure_ratio_threshold:
+                severity = "degraded"
+                reason_parts.append(f"ratio={ratio:.3f}")
+        if delta >= self._config.backpressure_counter_trip_threshold > 0:
+            severity = "tripped"
+            reason_parts.append(f"delta={delta}")
+        elif delta >= self._config.backpressure_counter_threshold > 0 and severity is None:
+            severity = "degraded"
+            reason_parts.append(f"delta={delta}")
+        if severity is None:
+            return None
+        reason = "backpressure(" + ",".join(reason_parts) + ")"
+        return StageEscalation(
+            stage=snapshot.stage,
+            escalation_type="backpressure",
+            severity=severity,
+            reason=reason,
+            metrics=dict(snapshot.metrics),
+            counters=dict(snapshot.counters),
+            timestamp_s=now_s,
+        )
+
+    def _evaluate_circuit_breaker(
+        self,
+        snapshot: StageHealthSnapshot,
+        runtime: StageRuntimeState,
+        now_s: float,
+    ) -> StageEscalation | None:
+        counter = _sum_counters(snapshot.counters, self._config.circuit_breaker_counter_keys)
+        delta = max(counter - runtime.last_circuit_breaker_count, 0)
+        runtime.last_circuit_breaker_count = counter
+        if self._config.circuit_breaker_trip_threshold <= 0:
+            return None
+        if delta < self._config.circuit_breaker_trip_threshold:
+            return None
+        reason = f"circuit_breaker(delta={delta})"
+        return StageEscalation(
+            stage=snapshot.stage,
+            escalation_type="circuit_breaker",
+            severity="tripped",
+            reason=reason,
+            metrics=dict(snapshot.metrics),
+            counters=dict(snapshot.counters),
+            timestamp_s=now_s,
+        )
 
     def _apply_recovery(
         self,
@@ -291,6 +498,8 @@ class ControlPlaneSupervisor:
         hub_report: ControlPlaneReport,
         statuses: Iterable[SupervisorStageStatus],
         transitions: Iterable[StageTransition],
+        escalations: Iterable[StageEscalation],
+        recovery_queue: Iterable[RecoveryAction],
         global_state: str,
     ) -> str:
         payload = {
@@ -298,9 +507,14 @@ class ControlPlaneSupervisor:
             "hub_report_digest": hub_report.digest,
             "stages": [status.asdict() for status in statuses],
             "transitions": [asdict(transition) for transition in transitions],
+            "escalations": [asdict(escalation) for escalation in escalations],
+            "recovery_queue": [asdict(action) for action in recovery_queue],
             "transition_digest": stable_event_digest(transitions),
         }
-        return stable_hash(payload, exclude_keys=("timestamp_s", "last_transition_s", "generated_at_s"))
+        return stable_hash(
+            payload,
+            exclude_keys=("timestamp_s", "last_transition_s", "generated_at_s", "queued_at_s"),
+        )
 
     def _normalize_state(self, raw_state: str) -> str:
         normalized = raw_state.lower().strip()
@@ -312,11 +526,48 @@ class ControlPlaneSupervisor:
         combined = f"{event_type} {message}".lower()
         return any(keyword in combined for keyword in self._config.error_keywords)
 
+    def _queue_recovery_action(self, escalation: StageEscalation) -> RecoveryAction:
+        self._recovery_seq += 1
+        action = RecoveryAction(
+            stage=escalation.stage,
+            action_type=escalation.escalation_type,
+            severity=escalation.severity,
+            reason=escalation.reason,
+            queued_at_s=escalation.timestamp_s,
+            seq_id=self._recovery_seq,
+        )
+        self._recovery_queue.enqueue(action)
+        return action
+
+
+def _max_metric(metrics: Mapping[str, float], keys: Iterable[str]) -> float | None:
+    values = [float(metrics[key]) for key in keys if key in metrics]
+    if not values:
+        return None
+    return max(values)
+
+
+def _sum_counters(counters: Mapping[str, int], keys: Iterable[str]) -> int:
+    return int(sum(int(counters.get(key, 0)) for key in keys))
+
+
+def _merge_state(current: str, incoming: str) -> str:
+    rank = {"healthy": 0, "recovering": 1, "degraded": 2, "tripped": 3}
+    return current if rank.get(current, 0) >= rank.get(incoming, 0) else incoming
+
+
+def _recovery_sort_key(action: RecoveryAction) -> tuple[int, float, str, int]:
+    severity_rank = 0 if action.severity == "tripped" else 1
+    return (severity_rank, action.queued_at_s, action.stage, action.seq_id)
+
 
 __all__ = [
     "ControlPlaneSupervisor",
     "ControlPlaneSupervisorConfig",
     "ControlPlaneSupervisorReport",
+    "RecoveryAction",
+    "RecoveryQueue",
+    "StageEscalation",
     "StageTransition",
     "SupervisorStageStatus",
 ]

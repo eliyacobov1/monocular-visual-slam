@@ -107,3 +107,91 @@ def test_supervisor_recovery_flow() -> None:
     now[0] = 1.3
     report = supervisor.update()
     assert report.stage_statuses[0].state == "healthy"
+
+
+def test_supervisor_escalates_backpressure_and_circuit_breaker() -> None:
+    adapters = [
+        ControlPlaneStageAdapter(
+            name="ingestion",
+            health_snapshot=lambda: StageHealthSnapshot(
+                stage="ingestion",
+                state="healthy",
+                metrics={"entry_queue_depth_ratio": 0.9},
+                counters={"output_backpressure": 1},
+            ),
+            events=lambda: (),
+        ),
+        ControlPlaneStageAdapter(
+            name="feature",
+            health_snapshot=lambda: StageHealthSnapshot(
+                stage="feature",
+                state="healthy",
+                metrics={"queue_depth_ratio": 0.1},
+                counters={"breaker_opens": 1},
+            ),
+            events=lambda: (),
+        ),
+        ControlPlaneStageAdapter(
+            name="tracking",
+            health_snapshot=lambda: StageHealthSnapshot(
+                stage="tracking",
+                state="healthy",
+                metrics={},
+                counters={},
+            ),
+            events=lambda: (),
+        ),
+    ]
+    config = ControlPlaneSupervisorConfig(
+        stage_dependencies={"tracking": ("feature",)},
+        backpressure_ratio_threshold=0.8,
+        backpressure_ratio_trip_threshold=0.95,
+        backpressure_counter_threshold=1,
+        backpressure_counter_trip_threshold=2,
+        circuit_breaker_trip_threshold=1,
+    )
+    supervisor = ControlPlaneSupervisor(adapters, config=config)
+    report = supervisor.update()
+    stage_states = {status.stage: status.state for status in report.stage_statuses}
+    assert stage_states["ingestion"] == "degraded"
+    assert stage_states["feature"] == "tripped"
+    assert stage_states["tracking"] == "degraded"
+    escalation_types = {(esc.stage, esc.escalation_type, esc.severity) for esc in report.escalations}
+    assert ("ingestion", "backpressure", "degraded") in escalation_types
+    assert ("feature", "circuit_breaker", "tripped") in escalation_types
+    assert [action.stage for action in report.recovery_queue] == ["feature", "ingestion"]
+
+
+def test_recovery_queue_bounded_capacity() -> None:
+    adapters = [
+        ControlPlaneStageAdapter(
+            name="feature",
+            health_snapshot=lambda: StageHealthSnapshot(
+                stage="feature",
+                state="healthy",
+                metrics={"queue_depth_ratio": 0.96},
+                counters={},
+            ),
+            events=lambda: (),
+        ),
+        ControlPlaneStageAdapter(
+            name="ingestion",
+            health_snapshot=lambda: StageHealthSnapshot(
+                stage="ingestion",
+                state="healthy",
+                metrics={"entry_queue_depth_ratio": 0.96},
+                counters={},
+            ),
+            events=lambda: (),
+        ),
+    ]
+    config = ControlPlaneSupervisorConfig(
+        stage_dependencies={},
+        backpressure_ratio_threshold=0.8,
+        backpressure_ratio_trip_threshold=0.95,
+        recovery_queue_capacity=1,
+    )
+    supervisor = ControlPlaneSupervisor(adapters, config=config)
+    report = supervisor.update()
+    assert len(report.recovery_queue) == 1
+    assert report.recovery_queue[0].stage == "ingestion"
