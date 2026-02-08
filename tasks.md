@@ -35,6 +35,7 @@
 2. **Backpressure + circuit-breaker escalation**
    - Introduce cross-stage propagation of backpressure thresholds and circuit-breaker trip logic.
    - Add recovery queues with deterministic drain order and bounded memory.
+   - Status: Complete
 3. **Failure injection + chaos harness**
    - Build deterministic failure injection (timeouts, dropped frames, solver stalls) and validate recovery.
    - Add stress benchmarks for supervisor scalability and race safety.
