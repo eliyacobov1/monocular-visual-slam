@@ -25,6 +25,7 @@ from feature_control_plane import FeatureControlConfig, FeatureControlPlane
 from feature_pipeline import FeaturePipelineConfig, build_feature_pipeline
 from robust_pose_estimator import (
     PoseEstimationDiagnostics,
+    PoseEstimationFailure,
     RobustPoseEstimator,
     RobustPoseEstimatorConfig,
 )
@@ -255,8 +256,25 @@ class SLAMSystem:
                 )
         except Exception as exc:
             LOGGER.exception("Pose estimation failed for frame %d", self._frame_id)
-            if self._attempt_relocalization(keypoints, descriptors, frame_gray, timestamp):
-                return self._current_pose.copy()
+            if isinstance(exc, PoseEstimationFailure):
+                event = TelemetryEvent(
+                    name="pose_stability_gate",
+                    duration_s=0.0,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    metadata={
+                        "frame_id": self._frame_id,
+                        "reason": exc.reason,
+                        "recovery_action": exc.recovery_action,
+                        "metrics": exc.metrics,
+                    },
+                )
+                self.telemetry.record_event(event)
+                if exc.recovery_action == "relocalize":
+                    if self._attempt_relocalization(keypoints, descriptors, frame_gray, timestamp):
+                        return self._current_pose.copy()
+            else:
+                if self._attempt_relocalization(keypoints, descriptors, frame_gray, timestamp):
+                    return self._current_pose.copy()
             self._prev_frame = frame_gray
             self._prev_kp = keypoints
             self._prev_desc = descriptors
@@ -573,7 +591,10 @@ class SLAMSystem:
         self._frame_id += 1
 
     def _append_pose_failure(self, timestamp: float, error: Exception) -> None:
-        failure_reason = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
+        if isinstance(error, PoseEstimationFailure):
+            failure_reason = error.reason
+        else:
+            failure_reason = f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
         self._append_pose(
             timestamp,
             method="pose_failure",

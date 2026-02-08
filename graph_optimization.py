@@ -47,6 +47,8 @@ class SolverConfig:
     gtol: float = 1e-10
     linear_solver_max_iter: int = 200
     linear_solver_tol: float = 1e-8
+    max_condition_number: float = 1e8
+    min_diagonal: float = 1e-12
 
     def __post_init__(self) -> None:
         if self.max_iterations <= 0:
@@ -61,6 +63,10 @@ class SolverConfig:
             raise ValueError("linear_solver_max_iter must be positive")
         if self.linear_solver_tol <= 0:
             raise ValueError("linear_solver_tol must be positive")
+        if self.max_condition_number <= 0:
+            raise ValueError("max_condition_number must be positive")
+        if self.min_diagonal <= 0:
+            raise ValueError("min_diagonal must be positive")
 
 
 @dataclass(frozen=True)
@@ -94,6 +100,17 @@ class SolverResult:
     iterations: int
     message: str
     diagnostics: SolverDiagnostics | None = None
+
+
+@dataclass(frozen=True)
+class ConditioningDiagnostics:
+    """Diagnostics for normal-equation conditioning."""
+
+    condition_number: float
+    min_diagonal: float
+    max_diagonal: float
+    status: str
+    message: str
 
 
 @dataclass(frozen=True)
@@ -357,6 +374,60 @@ class BlockSparseNormalEquation:
         self._rhs[row] += rhs
 
 
+def compute_conditioning_diagnostics(
+    linearized: Iterable[LinearizedResidual],
+    *,
+    block_size: int,
+    num_blocks: int,
+    loss_config: RobustLossConfig,
+    damping: float,
+) -> ConditioningDiagnostics:
+    """Compute conditioning diagnostics for a normal equation."""
+
+    normal = BlockSparseNormalEquation(block_size, num_blocks)
+    for block in linearized:
+        robust_weight = _robust_weight(block.residual, loss_config)
+        weight = float(block.weight) * robust_weight
+        sqrt_w = np.sqrt(weight)
+        jac_i = sqrt_w * block.jacobian_i
+        normal.add_block(block.i, block.i, jac_i.T @ jac_i)
+        if block.j is None or block.jacobian_j is None:
+            continue
+        jac_j = sqrt_w * block.jacobian_j
+        normal.add_block(block.j, block.j, jac_j.T @ jac_j)
+        normal.add_block(block.i, block.j, jac_i.T @ jac_j)
+        normal.add_block(block.j, block.i, jac_j.T @ jac_i)
+    normal.matrix.add_to_diagonal(damping)
+    dense = normal.matrix.to_dense()
+    if dense.size == 0:
+        return ConditioningDiagnostics(
+            condition_number=float("inf"),
+            min_diagonal=0.0,
+            max_diagonal=0.0,
+            status="invalid",
+            message="Normal equation is empty",
+        )
+    diag = np.diag(dense)
+    min_diagonal = float(np.min(diag)) if diag.size else 0.0
+    max_diagonal = float(np.max(diag)) if diag.size else 0.0
+    try:
+        condition_number = float(np.linalg.cond(dense))
+    except np.linalg.LinAlgError:
+        condition_number = float("inf")
+    status = "ok"
+    message = "Conditioning check completed"
+    if not np.isfinite(condition_number):
+        status = "invalid"
+        message = "Conditioning check failed: non-finite condition number"
+    return ConditioningDiagnostics(
+        condition_number=condition_number,
+        min_diagonal=min_diagonal,
+        max_diagonal=max_diagonal,
+        status=status,
+        message=message,
+    )
+
+
 @dataclass(frozen=True)
 class ConjugateGradientResult:
     """Result for conjugate-gradient solves."""
@@ -546,6 +617,7 @@ __all__ = [
     "BlockDiagonalPreconditioner",
     "BlockSparseMatrix",
     "BlockSparseNormalEquation",
+    "ConditioningDiagnostics",
     "ConjugateGradientResult",
     "ConjugateGradientSolver",
     "GaussNewtonSolver",
@@ -560,5 +632,6 @@ __all__ = [
     "SolverDiagnostics",
     "SolverRegistry",
     "SolverResult",
+    "compute_conditioning_diagnostics",
     "get_solver_registry",
 ]

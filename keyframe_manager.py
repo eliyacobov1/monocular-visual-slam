@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
@@ -9,6 +10,8 @@ import cv2
 import numpy as np
 
 from bundle_adjustment import Observation, run_bundle_adjustment, triangulate_points
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -93,13 +96,22 @@ class KeyframeManager:
         if points_3d.shape[0] < 6:
             return None
         poses = [kf.pose for kf in window]
-        optimized_poses, _ = run_bundle_adjustment(
+        optimized_poses, _, diagnostics = run_bundle_adjustment(
             poses=poses,
             points_3d=points_3d,
             observations=observations,
             intrinsics=intrinsics,
             max_nfev=max_nfev,
         )
+        if diagnostics.fallback_applied:
+            LOGGER.warning(
+                "Local bundle adjustment fallback applied",
+                extra={
+                    "condition_number": diagnostics.condition_number,
+                    "min_singular_value": diagnostics.min_singular_value,
+                    "status": diagnostics.status,
+                },
+            )
         return BundleAdjustmentResult(
             frame_ids=[kf.frame_id for kf in window],
             poses=optimized_poses,
