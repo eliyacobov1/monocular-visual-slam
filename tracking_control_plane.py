@@ -14,6 +14,7 @@ import numpy as np
 
 from control_plane_hub import StageHealthSnapshot
 from data_persistence import P2Quantile
+from deterministic_integrity import stable_event_digest
 from feature_control_plane import FeatureControlPlane, FeatureResult
 from ingestion_control_plane import BackpressureTimeout, CircuitBreaker, CircuitBreakerConfig
 
@@ -86,6 +87,10 @@ class DeterministicEventLog:
     def snapshot(self) -> list[TrackingEvent]:
         with self._lock:
             return list(self._events)
+
+    def digest(self) -> str:
+        with self._lock:
+            return stable_event_digest(self._events)
 
     @property
     def capacity(self) -> int:

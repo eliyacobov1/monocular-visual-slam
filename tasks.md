@@ -7,7 +7,7 @@
 1. **Global determinism contract** (Complete)
    - Introduce a single deterministic seed/config registry that feeds ingestion, feature extraction, tracking, optimization, evaluation, and telemetry.
    - Require every artifact (trajectories, metrics, diagnostics, telemetry) to embed the seed + config hash.
-2. **Deterministic ordering + data integrity**
+2. **Deterministic ordering + data integrity** (Complete)
    - Enforce deterministic ordering for all stage queues, loop-closure candidate sets, and optimization inputs (stable ordering + explicit tie-breakers).
    - Add stable hashing for stage event streams and data snapshots to make reproducibility auditable.
 3. **Algorithmic stability gates**

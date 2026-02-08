@@ -51,3 +51,5 @@ def test_control_plane_hub_orders_events() -> None:
     ]
     assert {snapshot.stage for snapshot in report.stage_snapshots} == {"alpha", "beta"}
     assert report.digest
+    assert report.event_stream_digest
+    assert report.stage_snapshot_digest

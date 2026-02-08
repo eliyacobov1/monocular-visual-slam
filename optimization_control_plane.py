@@ -13,6 +13,7 @@ import numpy as np
 
 from control_plane_hub import StageHealthSnapshot
 from data_persistence import P2Quantile
+from deterministic_integrity import stable_event_digest
 from graph_optimization import (
     IterationDiagnostics,
     PoseGraphProblem,
@@ -89,6 +90,10 @@ class DeterministicEventLog:
     def snapshot(self) -> list[OptimizationStageEvent]:
         with self._lock:
             return list(self._events)
+
+    def digest(self) -> str:
+        with self._lock:
+            return stable_event_digest(self._events)
 
     @property
     def capacity(self) -> int:
