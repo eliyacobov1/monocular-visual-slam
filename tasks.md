@@ -14,8 +14,8 @@
    - Add degeneracy detection (low parallax, low inlier count, cheirality failure) with explicit recovery actions.
    - Introduce numerical conditioning checks for local BA / pose-graph updates with fallback strategies.
 4. **Determinism validation suite**
-   - Add tests that run identical seeds across full pipelines and compare hashes of outputs.
-   - Provide a deterministic report artifact with digest + drift checks.
+   - Add tests that run identical seeds across full pipelines and compare hashes of outputs. (Complete)
+   - Provide a deterministic report artifact with digest + drift checks. (Complete)
 
 **Success criteria**
 - Same seed/config yields byte-identical artifacts across two runs.
