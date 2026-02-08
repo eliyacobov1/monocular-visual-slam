@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Callable, Deque, Iterable, Literal, Protocol, TypeVar
 
+from deterministic_integrity import stable_event_digest
+
 LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -219,6 +221,10 @@ class DeterministicEventLog:
     def snapshot(self) -> list[StageEvent]:
         with self._lock:
             return list(self._events)
+
+    def digest(self) -> str:
+        with self._lock:
+            return stable_event_digest(self._events)
 
     @property
     def capacity(self) -> int:

@@ -25,6 +25,7 @@ from graph_optimization import (
     SolverResult,
     get_solver_registry,
 )
+from deterministic_integrity import stable_hash
 from optimization_control_plane import OptimizationControlConfig, OptimizationRunReport, OptimizationSupervisor
 
 logger = logging.getLogger(__name__)
@@ -211,6 +212,7 @@ class PoseGraph(_BasePoseGraph):
             }
             for edge in self.edges
         ]
+        edges_payload = _order_edges(edges_payload)
         snapshot = PoseGraphSnapshot(
             version=2,
             solver_name=self._solver_name,
@@ -316,6 +318,7 @@ class PoseGraph3D(_BasePoseGraph):
             }
             for edge in self.edges
         ]
+        edges_payload = _order_edges(edges_payload)
         snapshot = PoseGraphSnapshot(
             version=2,
             solver_name=self._solver_name,
@@ -446,6 +449,7 @@ class PoseGraphSim3D(_BasePoseGraph):
             }
             for edge in self.edges
         ]
+        edges_payload = _order_edges(edges_payload)
         snapshot = PoseGraphSnapshot(
             version=2,
             solver_name=self._solver_name,
@@ -482,6 +486,21 @@ class PoseGraphSim3D(_BasePoseGraph):
         self.scales = optimized_scales
         logger.info("Sim(3) pose graph optimisation success: %s", result.success)
         return optimized
+
+
+def _order_edges(edges_payload: list[dict[str, object]]) -> list[dict[str, object]]:
+    ordered: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    for payload in edges_payload:
+        sort_key = (
+            int(payload.get("i", 0)),
+            int(payload.get("j", 0)),
+            float(payload.get("s", 0.0)),
+            float(payload.get("weight", 0.0)),
+            stable_hash(payload),
+        )
+        ordered.append((sort_key, payload))
+    ordered.sort(key=lambda item: item[0])
+    return [payload for _, payload in ordered]
 
 
 __all__ = [

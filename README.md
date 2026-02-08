@@ -19,7 +19,7 @@ pose-graph optimization.
   geometric verification.
 - **Persistent map snapshots + relocalization** to save/load keyframes and
   recover tracking after failures (including on-the-fly map snapshot building
-  from keyframes in the SLAM API).
+  from keyframes in the SLAM API), with stable snapshot digests for auditing.
 - **Pose-graph optimization** in SE(3), with optional **Sim(3)** loop correction
   to mitigate scale drift in monocular runs.
 - **Pluggable graph-optimization solvers** with deterministic snapshots and
@@ -54,6 +54,7 @@ pose-graph optimization.
 
 4. **Persistence + Relocalization**
    - Schema-versioned map snapshots and BoW indices (`persistent_map.py`).
+   - Stable snapshot digests embedded in map metadata for reproducibility audits.
    - BoW candidate retrieval plus geometric verification for relocalization.
 
 5. **Async Ingestion Control Plane**

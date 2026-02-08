@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Protocol
+
+from deterministic_integrity import stable_event_digest, stable_hash
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,12 +55,16 @@ class ControlPlaneReport:
     stage_snapshots: tuple[StageHealthSnapshot, ...]
     events: tuple[StageEventEnvelope, ...]
     digest: str
+    event_stream_digest: str
+    stage_snapshot_digest: str
     generated_at_s: float
 
     def asdict(self) -> dict[str, Any]:
         return {
             "generated_at_s": self.generated_at_s,
             "digest": self.digest,
+            "event_stream_digest": self.event_stream_digest,
+            "stage_snapshot_digest": self.stage_snapshot_digest,
             "stages": [asdict(snapshot) for snapshot in self.stage_snapshots],
             "events": [event.asdict() for event in self.events],
         }
@@ -117,14 +121,24 @@ class ControlPlaneHub:
 
     def generate_report(self) -> ControlPlaneReport:
         with self._lock:
-            stage_snapshots = tuple(adapter.health_snapshot() for adapter in self._adapters)
-            merged_events = self._merge_events(self._adapters)
+            adapters = sorted(self._adapters, key=lambda adapter: adapter.name)
+            stage_snapshots = tuple(
+                sorted(
+                    (adapter.health_snapshot() for adapter in adapters),
+                    key=lambda snapshot: snapshot.stage,
+                )
+            )
+            merged_events = self._merge_events(adapters)
             generated_at_s = time.time()
-            digest = self._digest(stage_snapshots, merged_events, generated_at_s)
+            stage_snapshot_digest = stable_hash(stage_snapshots, exclude_keys=("updated_at_s",))
+            event_stream_digest = stable_event_digest(merged_events)
+            digest = self._digest(stage_snapshots, merged_events)
             return ControlPlaneReport(
                 stage_snapshots=stage_snapshots,
                 events=tuple(merged_events),
                 digest=digest,
+                event_stream_digest=event_stream_digest,
+                stage_snapshot_digest=stage_snapshot_digest,
                 generated_at_s=generated_at_s,
             )
 
@@ -135,17 +149,27 @@ class ControlPlaneHub:
         streams: list[list[StageEventEnvelope]] = []
         for adapter in adapters:
             events = list(adapter.events())
-            envelopes = [
-                StageEventEnvelope(
-                    stage=adapter.name,
-                    event_type=event.event_type,
-                    message=event.message,
-                    metadata=dict(event.metadata),
-                    timestamp_s=float(event.timestamp_s),
-                    seq_id=seq_id,
+            ordered = sorted(
+                events,
+                key=lambda event: (
+                    float(event.timestamp_s),
+                    str(event.event_type),
+                    str(event.message),
+                    stable_hash(getattr(event, "metadata", {})),
+                ),
+            )
+            envelopes = []
+            for seq_id, event in enumerate(ordered):
+                envelopes.append(
+                    StageEventEnvelope(
+                        stage=adapter.name,
+                        event_type=event.event_type,
+                        message=event.message,
+                        metadata=dict(event.metadata),
+                        timestamp_s=float(event.timestamp_s),
+                        seq_id=seq_id,
+                    )
                 )
-                for seq_id, event in enumerate(events)
-            ]
             streams.append(envelopes)
 
         import heapq
@@ -184,15 +208,12 @@ class ControlPlaneHub:
         self,
         stage_snapshots: Iterable[StageHealthSnapshot],
         events: Iterable[StageEventEnvelope],
-        generated_at_s: float,
     ) -> str:
         payload = {
-            "generated_at_s": generated_at_s,
             "stages": [asdict(snapshot) for snapshot in stage_snapshots],
             "events": [event.asdict() for event in events],
         }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+        return stable_hash(payload, exclude_keys=("updated_at_s", "timestamp_s"))
 
 
 __all__ = [

@@ -53,15 +53,33 @@ class BoWDatabase:
             raise RuntimeError("BoW vocabulary has not been trained")
         return self.vocab.copy()
 
-    def detect_loop(self, desc: np.ndarray, threshold: float = 0.75) -> int | None:
+    def rank_candidates(
+        self,
+        desc: np.ndarray,
+        *,
+        top_k: int | None = None,
+    ) -> list[tuple[int, float]]:
         if not self.vocab_trained or len(self.hists) == 0 or desc is None or len(desc) == 0:
-            return None
+            return []
         hist = self._compute_hist(desc)
         sims = cosine_similarity([hist], self.hists)[0]
-        best_idx = int(np.argmax(sims))
-        if sims[best_idx] > threshold:
-            loop_id = self.frame_ids[best_idx]
-            logger.info("Detected loop with frame %d (score=%.2f)", loop_id, sims[best_idx])
+        candidates = [
+            (int(frame_id), float(score)) for frame_id, score in zip(self.frame_ids, sims)
+        ]
+        candidates.sort(key=lambda item: (-item[1], item[0]))
+        if top_k is not None:
+            if top_k <= 0:
+                raise ValueError("top_k must be positive")
+            return candidates[:top_k]
+        return candidates
+
+    def detect_loop(self, desc: np.ndarray, threshold: float = 0.75) -> int | None:
+        candidates = self.rank_candidates(desc, top_k=1)
+        if not candidates:
+            return None
+        loop_id, score = candidates[0]
+        if score > threshold:
+            logger.info("Detected loop with frame %d (score=%.2f)", loop_id, score)
             return loop_id
-        logger.debug("No loop detected: best score %.2f", sims[best_idx])
+        logger.debug("No loop detected: best score %.2f", score)
         return None

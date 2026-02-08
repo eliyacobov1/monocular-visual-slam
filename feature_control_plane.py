@@ -15,6 +15,7 @@ import numpy as np
 
 from control_plane_hub import StageHealthSnapshot
 from data_persistence import P2Quantile
+from deterministic_integrity import stable_event_digest
 from feature_pipeline import FeaturePipelineConfig, build_feature_pipeline
 from ingestion_control_plane import (
     AdaptiveBoundedQueue,
@@ -624,6 +625,10 @@ class FeatureControlPlane:
     def events(self) -> tuple[FeatureControlEvent, ...]:
         with self._lock:
             return tuple(self._events)
+
+    def event_digest(self) -> str:
+        with self._lock:
+            return stable_event_digest(self._events)
 
 
 __all__ = [

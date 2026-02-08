@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity, pairwise_distances_argmin_min
 
+from deterministic_integrity import stable_hash
 from homography import estimate_pose_from_matches
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,23 @@ class PersistentMapSnapshot:
     bow_vocab: np.ndarray
     bow_hists: np.ndarray
     bow_frame_ids: np.ndarray
+
+    def digest(self) -> str:
+        payload = {
+            "keyframes": [
+                {
+                    "frame_id": int(kf.frame_id),
+                    "pose": kf.pose,
+                    "keypoints": kf.keypoints,
+                    "descriptors": kf.descriptors,
+                }
+                for kf in self.keyframes
+            ],
+            "bow_vocab": self.bow_vocab,
+            "bow_hists": self.bow_hists,
+            "bow_frame_ids": self.bow_frame_ids,
+        }
+        return stable_hash(payload)
 
 
 @dataclass(frozen=True)
@@ -83,6 +101,7 @@ def build_snapshot(
 ) -> PersistentMapSnapshot:
     if not keyframes:
         raise ValueError("At least one keyframe is required")
+    keyframes = sorted(keyframes, key=lambda kf: int(kf.frame_id))
     if bow_vocab.ndim != 2 or bow_vocab.shape[0] == 0:
         raise ValueError("BoW vocabulary must be a non-empty 2D array")
     for kf in keyframes:
@@ -127,6 +146,7 @@ class PersistentMapStore:
             "schema_version": MAP_SCHEMA_VERSION,
             "created_at": _timestamp(),
             "num_keyframes": len(snapshot.keyframes),
+            "snapshot_digest": snapshot.digest(),
         }
         (directory / "map_metadata.json").write_text(
             json.dumps(metadata, indent=2),
@@ -211,7 +231,14 @@ class MapRelocalizer:
             raise ValueError("Descriptors are required for relocalization")
         hist = compute_bow_histogram(descriptors, self.snapshot.bow_vocab)
         scores = cosine_similarity([hist], self.snapshot.bow_hists)[0]
-        candidate_indices = np.argsort(scores)[::-1][: self.max_candidates]
+        ranked = sorted(
+            range(len(scores)),
+            key=lambda idx: (
+                -float(scores[idx]),
+                int(self.snapshot.bow_frame_ids[idx]),
+            ),
+        )
+        candidate_indices = ranked[: self.max_candidates]
         best: RelocalizationResult | None = None
         for idx in candidate_indices:
             score = float(scores[idx])
