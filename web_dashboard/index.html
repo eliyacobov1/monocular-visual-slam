@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Monocular SLAM Live Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div>
+        <h1>Monocular SLAM Live Dashboard</h1>
+        <p class="subtitle">Real-time tracking health, trajectory, and feature diagnostics.</p>
+      </div>
+      <div class="connection" id="connection-status">Connecting…</div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>Run Status</h2>
+        <div class="status-row">
+          <div>
+            <p class="label">Tracking State</p>
+            <p id="tracking-status" class="status ok">Waiting for data</p>
+          </div>
+          <div>
+            <p class="label">Progress</p>
+            <div class="progress">
+              <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <p class="hint" id="progress-text">0% · 0 / 0 frames</p>
+          </div>
+        </div>
+        <div class="stat-grid">
+          <div>
+            <p class="label">Frame</p>
+            <p id="frame-id">—</p>
+          </div>
+          <div>
+            <p class="label">FPS</p>
+            <p id="fps">—</p>
+          </div>
+          <div>
+            <p class="label">Features</p>
+            <p id="features">—</p>
+          </div>
+          <div>
+            <p class="label">Matches</p>
+            <p id="matches">—</p>
+          </div>
+          <div>
+            <p class="label">Inliers</p>
+            <p id="inliers">—</p>
+          </div>
+          <div>
+            <p class="label">Inlier Ratio</p>
+            <p id="inlier-ratio">—</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Trajectory Preview</h2>
+        <canvas id="trajectory" width="520" height="260"></canvas>
+        <p class="hint">Live XY projection of the estimated camera path.</p>
+      </section>
+
+      <section class="card">
+        <h2>Pose Summary</h2>
+        <div class="stat-grid">
+          <div>
+            <p class="label">Position</p>
+            <p id="position">—</p>
+          </div>
+          <div>
+            <p class="label">Yaw / Pitch / Roll</p>
+            <p id="ypr">—</p>
+          </div>
+        </div>
+        <h3>State Log</h3>
+        <ul id="log" class="log"></ul>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>Tip: Start the backend with <code>python main.py --web</code> to stream live updates.</p>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>

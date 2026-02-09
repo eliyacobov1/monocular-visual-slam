@@ -83,6 +83,33 @@ pose-graph optimization.
 - **Loop closure**: scikit-learn (MiniBatchKMeans + cosine similarity)
 - **Visualization**: Matplotlib; optional Next.js 14 dashboard (`frontend/`)
 
+## Getting Started (3-Step Quickstart)
+
+1. **Install dependencies**
+   ```bash
+   git clone <your-repo-url>
+   cd monocular-visual-slam
+   python -m venv .venv
+   source .venv/bin/activate  # on Windows: .venv\\Scripts\\activate
+   python -m pip install -r requirements.txt
+   ```
+2. **Pick an interface**
+   ```bash
+   # Local Matplotlib GUI (default)
+   python main.py --gui
+
+   # Same as above (defaults to GUI)
+   python main.py
+
+   # Web dashboard (starts WebSocket + HTTP)
+   python main.py --web
+   ```
+3. **Open the dashboard**
+   - Local GUI opens automatically.
+   - Web dashboard: visit `http://localhost:8001` in your browser.
+
+The demo entry point will download a short sample video if one is missing.
+
 ## Installation & Dependencies
 
 ```bash
@@ -100,6 +127,9 @@ python -m pip install scikit-learn
 ```
 
 Optional dashboard:
+
+The lightweight dashboard is provided by `python main.py --web`. You can also
+run the optional Next.js UI:
 
 ```bash
 cd frontend

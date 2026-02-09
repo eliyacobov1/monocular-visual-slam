@@ -64,5 +64,12 @@ modular, observable, and benchmark-gated.
 - Documentation and runbooks updated to reflect pipeline control-plane behavior and
   CI expectations.
 
+## User Experience & Accessibility
+- Default demo entry point must launch with a single command and show immediate progress.
+- Live interfaces should surface tracking health, progress, and pose summaries at a glance.
+- Use clear labels, consistent status colors, and short logs to narrate system state.
+- Web dashboards must be accessible via localhost with documented ports and fallbacks.
+- Favor recruiter-friendly instructions and minimal setup steps in README updates.
+
 ## Final Auditor's Note
 Audit complete: the deterministic control-plane SLAM stack is production-ready for Senior/Staff interview walkthroughs, with observability, regression gates, and recovery hardening verified across ingestion, tracking, optimization, and evaluation.
