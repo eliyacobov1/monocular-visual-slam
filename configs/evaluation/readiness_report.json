@@ -1,0 +1,12 @@
+{
+  "run": {
+    "run_id": "readiness_report",
+    "output_dir": "reports/readiness"
+  },
+  "readiness": {
+    "report_name": "senior_interview_readiness",
+    "control_plane_report_path": "reports/control_plane/control_plane_report.json",
+    "evaluation_summary_path": "reports/kitti_odometry/summary.json",
+    "telemetry_summary_path": "reports/kitti_odometry/telemetry/telemetry_summary.json"
+  }
+}
