@@ -379,6 +379,24 @@ class RunDataStore:
         LOGGER.info("Saved control-plane report '%s' to %s", name, report_path)
         return report_path
 
+    def save_solver_diagnostics_report(self, name: str, payload: Mapping[str, Any]) -> Path:
+        if not name:
+            raise ValueError("Solver diagnostics report name must be non-empty")
+        report_path = self._diagnostics_dir / f"{sanitize_artifact_name(name)}.json"
+        report_payload = dict(payload)
+        report_payload.setdefault("determinism", self._determinism_payload())
+        report_payload.setdefault("recorded_at", _timestamp())
+        try:
+            report_path.write_text(
+                json.dumps(report_payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            LOGGER.exception("Failed to write solver diagnostics '%s'", name)
+            raise RuntimeError("Failed to write solver diagnostics") from exc
+        LOGGER.info("Saved solver diagnostics '%s' to %s", name, report_path)
+        return report_path
+
     def load_metrics(self, name: str) -> MetricsBundle:
         metrics_path = self._metrics_dir / f"{sanitize_artifact_name(name)}.json"
         if not metrics_path.exists():
@@ -527,6 +545,13 @@ def frame_diagnostics_artifact_path(run_dir: Path, name: str) -> Path:
     return Path(run_dir) / "diagnostics" / f"{safe_name}.json"
 
 
+def solver_diagnostics_artifact_path(run_dir: Path, name: str) -> Path:
+    """Return the expected solver diagnostics artifact path for a run directory."""
+
+    safe_name = sanitize_artifact_name(name)
+    return Path(run_dir) / "diagnostics" / f"{safe_name}.json"
+
+
 def build_metrics_bundle(name: str, metrics: Mapping[str, float]) -> MetricsBundle:
     """Build a metrics bundle with a current timestamp."""
 
@@ -626,6 +651,18 @@ def load_frame_diagnostics_json(
         entries=entries,
         recorded_at=str(payload.get("recorded_at", _timestamp())),
     )
+
+
+def load_solver_diagnostics_json(path: Path) -> dict[str, Any]:
+    """Load a solver diagnostics payload from a persisted json file."""
+
+    if not path.exists():
+        raise FileNotFoundError(f"Solver diagnostics file not found: {path}")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.exception("Failed to read solver diagnostics '%s'", path)
+        raise RuntimeError("Failed to read solver diagnostics") from exc
 
 
 def iter_json_array_items(path: Path, key: str) -> Iterator[dict[str, Any]]:
