@@ -5,8 +5,8 @@ camera trajectories from video streams. The system targets **accuracy-first
 benchmarking** on standard datasets (KITTI, TUM RGB-D) with loop closure and
 pose-graph optimization.
 
-![Demo GIF](docs/media/demo.gif) <!-- [GIF/Image placeholder] -->
-![Trajectory Plot](docs/media/trajectory.png) <!-- [GIF/Image placeholder] -->
+![Demo GIF](docs/media/demo.gif)
+![Trajectory Plot](docs/media/trajectory.png)
 
 ## Key Features
 
@@ -20,8 +20,8 @@ pose-graph optimization.
 - **Persistent map snapshots + relocalization** to save/load keyframes and
   recover tracking after failures (including on-the-fly map snapshot building
   from keyframes in the SLAM API), with stable snapshot digests for auditing.
-- **Pose-graph optimization** in SE(3), with optional **Sim(3)** loop correction
-  to mitigate scale drift in monocular runs.
+- **Pose-graph optimization** in $SE(3)$, with optional **Sim(3)** loop correction
+  to mitigate monocular scale drift.
 - **Pluggable graph-optimization solvers** with deterministic snapshots and
   robust-loss selection for regression gating.
 - **Evaluation harness** for ATE/RPE on KITTI and TUM, plus dataset validation
@@ -67,14 +67,14 @@ pose-graph optimization.
 ## Mathematical Foundation
 
 - **Rigid-body motion** on $SE(3)$ using 4×4 homogeneous transforms; rotations are
-  parameterized via Rodrigues vectors.
+  parameterized via Rodrigues vectors (axis-angle).
 - **Epipolar geometry**: essential matrix $E = [t]_\times R$ with RANSAC for
   outlier rejection.
 - **Triangulation** and **reprojection error** minimization in local bundle
   adjustment.
 - **Optimization backend**: pluggable solver registry with SciPy
   `least_squares` and sparse Gauss-Newton solvers, plus configurable robust
-  losses for pose-graph refinement.
+  losses for pose-graph refinement and deterministic solver snapshots.
 
 ## Tech Stack
 
