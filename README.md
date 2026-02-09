@@ -145,6 +145,13 @@ Run the evaluation harness (ATE/RPE):
 python evaluation_harness.py --config configs/evaluation/kitti_odometry.json
 ```
 
+Generate the deterministic Senior Interview Readiness report (bundles control-plane health,
+telemetry summaries, and evaluation metrics):
+
+```bash
+python readiness_report.py --config configs/evaluation/readiness_report.json
+```
+
 Run the CI benchmark suite (includes baseline regression checks and severity scoring):
 
 ```bash

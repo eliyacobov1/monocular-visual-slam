@@ -85,6 +85,7 @@
    - Status: Complete
 3. **Release-quality reporting**
    - Add a deterministic “Senior Interview Readiness” report bundling control-plane health, telemetry, and evaluation metrics.
+   - Status: Complete
 
 **Success criteria**
 - Telemetry summaries are deterministic and published for every run.
