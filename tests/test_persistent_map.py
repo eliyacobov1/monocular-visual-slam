@@ -78,6 +78,7 @@ def test_relocalizer_returns_best_candidate_without_geometry() -> None:
     assert result is not None
     assert result.frame_id == 10
     assert result.score >= 0.1
+    assert result.match_count == 0
 
 
 def test_relocalizer_requires_intrinsics_for_geometry() -> None:

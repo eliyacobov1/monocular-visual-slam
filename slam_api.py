@@ -699,7 +699,7 @@ class SLAMSystem:
         self._append_pose(
             timestamp,
             method="relocalization",
-            match_count=result.inliers,
+            match_count=result.match_count,
             inliers=result.inliers,
             status="relocalized",
             failure_reason=None,

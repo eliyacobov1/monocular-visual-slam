@@ -11,13 +11,17 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-import numpy as np
 
 from dataset_validation import validate_kitti
 from deterministic_registry import build_registry
 from kitti_dataset import KittiSequence
 from slam_api import SLAMRunResult, SLAMSystem, SLAMSystemConfig
 from slam_runner import load_pipeline_config
+from relocalization_metrics import (
+    RelocalizationFrame,
+    summarize_relocalized_frames,
+    summarize_relocalization_events,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,29 +47,16 @@ def _load_telemetry(path: Path) -> list[dict[str, Any]]:
     return list(payload.get("events", []))
 
 
-def _summarize_relocalization_events(events: list[dict[str, Any]]) -> dict[str, Any]:
-    relocalization_events = [event for event in events if event.get("name") == "relocalization_search"]
-    durations = [float(event.get("duration_s", 0.0)) for event in relocalization_events]
-    successes = [
-        bool(event.get("metadata", {}).get("success", False)) for event in relocalization_events
-    ]
-    if durations:
-        durations_array = np.array(durations, dtype=np.float64)
-        p50 = float(np.quantile(durations_array, 0.5))
-        p95 = float(np.quantile(durations_array, 0.95))
-        mean = float(durations_array.mean())
-    else:
-        p50 = 0.0
-        p95 = 0.0
-        mean = 0.0
-    return {
-        "attempts": len(relocalization_events),
-        "successes": int(sum(successes)),
-        "success_rate": float(sum(successes)) / float(len(successes)) if successes else 0.0,
-        "latency_mean_s": mean,
-        "latency_p50_s": p50,
-        "latency_p95_s": p95,
-    }
+def _extract_tracking_loss_frame(events: list[dict[str, Any]]) -> int | None:
+    injected_events = [event for event in events if event.get("name") == "tracking_loss_injected"]
+    frame_ids = []
+    for event in injected_events:
+        metadata = event.get("metadata", {})
+        try:
+            frame_ids.append(int(metadata.get("frame_id")))
+        except (TypeError, ValueError):
+            continue
+    return min(frame_ids) if frame_ids else None
 
 
 def _build_demo_report(
@@ -77,7 +68,9 @@ def _build_demo_report(
         {
             "frame_id": entry.frame_id,
             "timestamp": entry.timestamp,
+            "match_count": entry.match_count,
             "inliers": entry.inliers,
+            "inlier_ratio": entry.inlier_ratio,
             "method": entry.method,
         }
         for entry in result.frame_diagnostics
@@ -86,7 +79,23 @@ def _build_demo_report(
     injected_events = [
         event for event in events if event.get("name") == "tracking_loss_injected"
     ]
-    relocalization_summary = _summarize_relocalization_events(events)
+    loss_frame_id = _extract_tracking_loss_frame(events)
+    relocalization_summary = summarize_relocalization_events(events)
+    relocalization_frames = [
+        RelocalizationFrame(
+            frame_id=entry.frame_id,
+            match_count=entry.match_count,
+            inliers=entry.inliers,
+            inlier_ratio=entry.inlier_ratio,
+            timestamp=entry.timestamp,
+            method=entry.method,
+        )
+        for entry in result.frame_diagnostics
+        if entry.status == "relocalized"
+    ]
+    relocalization_summary.update(
+        summarize_relocalized_frames(relocalization_frames, loss_frame_id=loss_frame_id)
+    )
     return {
         "run_id": config.run_id,
         "sequence": config.sequence,
@@ -96,6 +105,7 @@ def _build_demo_report(
         "run_dir": str(result.run_dir),
         "telemetry_path": str(result.telemetry_path) if result.telemetry_path else None,
         "tracking_loss_events": injected_events,
+        "tracking_loss_frame_id": loss_frame_id,
         "relocalization_summary": relocalization_summary,
         "relocalized_frames": relocalized_frames,
         "map_snapshot_path": str(result.map_snapshot_path) if result.map_snapshot_path else None,

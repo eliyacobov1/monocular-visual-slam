@@ -58,6 +58,7 @@ class PersistentMapSnapshot:
 class RelocalizationResult:
     frame_id: int
     score: float
+    match_count: int
     inliers: int
     rotation: np.ndarray
     translation: np.ndarray
@@ -254,6 +255,7 @@ class MapRelocalizer:
                 return RelocalizationResult(
                     frame_id=frame_id,
                     score=score,
+                    match_count=0,
                     inliers=0,
                     rotation=np.eye(3),
                     translation=np.zeros(3),
@@ -290,11 +292,20 @@ class MapRelocalizer:
             result = RelocalizationResult(
                 frame_id=frame_id,
                 score=score,
+                match_count=len(matches),
                 inliers=inlier_count,
                 rotation=rotation,
                 translation=translation,
             )
-            if best is None or result.inliers > best.inliers:
+            if best is None or (
+                result.inliers,
+                result.score,
+                -result.frame_id,
+            ) > (
+                best.inliers,
+                best.score,
+                -best.frame_id,
+            ):
                 best = result
         if best:
             logger.info(
