@@ -58,6 +58,7 @@
 2. **Loop-closure validation suite**
    - Introduce a loop-closure verification dataset with geometric + temporal consistency scoring.
    - Implement false-positive gating with deterministic acceptance thresholds.
+   - Status: Complete
 3. **Relocalization regression gates**
    - Add deterministic relocalization evaluation with baselines for match counts/inlier rates.
    - Validate recovery correctness on forced tracking loss scenarios.
