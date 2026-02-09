@@ -326,6 +326,14 @@ def test_evaluation_harness_with_relocalization_report(tmp_path: Path) -> None:
             "latency_mean_s": 0.2,
             "latency_p50_s": 0.2,
             "latency_p95_s": 0.3,
+            "match_count_mean": 75.0,
+            "match_count_p50": 75.0,
+            "match_count_p95": 97.5,
+            "inlier_ratio_mean": 0.65,
+            "inlier_ratio_p50": 0.65,
+            "inlier_ratio_p95": 0.785,
+            "recovery_success": 1.0,
+            "recovery_frame_gap": 2.0,
         },
     }
     report_path = run_dir / "relocalization_demo_report.json"
@@ -360,5 +368,6 @@ def test_evaluation_harness_with_relocalization_report(tmp_path: Path) -> None:
     summary = run_evaluation(eval_config)
 
     assert summary["relocalization_metrics"]["relocalization_success_rate"] == 0.5
+    assert summary["relocalization_metrics"]["relocalization_match_count_mean"] == 75.0
     per_sequence = summary["per_sequence"]["slam_run"]
     assert per_sequence["relocalization_metrics"]["relocalization_attempts"] == 2.0

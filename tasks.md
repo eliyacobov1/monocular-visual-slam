@@ -62,6 +62,7 @@
 3. **Relocalization regression gates**
    - Add deterministic relocalization evaluation with baselines for match counts/inlier rates.
    - Validate recovery correctness on forced tracking loss scenarios.
+   - Status: Complete
 
 **Success criteria**
 - Solver regressions are detected by CI gates with clear diagnostics.

@@ -420,6 +420,14 @@ def _relocalization_metrics_from_report(report: dict[str, Any]) -> dict[str, flo
         "relocalization_latency_mean_s": float(summary.get("latency_mean_s", 0.0)),
         "relocalization_latency_p50_s": float(summary.get("latency_p50_s", 0.0)),
         "relocalization_latency_p95_s": float(summary.get("latency_p95_s", 0.0)),
+        "relocalization_match_count_mean": float(summary.get("match_count_mean", 0.0)),
+        "relocalization_match_count_p50": float(summary.get("match_count_p50", 0.0)),
+        "relocalization_match_count_p95": float(summary.get("match_count_p95", 0.0)),
+        "relocalization_inlier_ratio_mean": float(summary.get("inlier_ratio_mean", 0.0)),
+        "relocalization_inlier_ratio_p50": float(summary.get("inlier_ratio_p50", 0.0)),
+        "relocalization_inlier_ratio_p95": float(summary.get("inlier_ratio_p95", 0.0)),
+        "relocalization_recovery_success": float(summary.get("recovery_success", 0.0)),
+        "relocalization_recovery_frame_gap": float(summary.get("recovery_frame_gap", 0.0)),
     }
 
 
