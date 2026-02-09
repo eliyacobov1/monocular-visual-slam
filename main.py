@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import importlib
+from importlib import util
 import logging
 import socket
 import subprocess
@@ -39,7 +39,7 @@ def _port_available(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def _require_module(name: str) -> None:
-    if importlib.util.find_spec(name) is None:
+    if util.find_spec(name) is None:
         raise SystemExit(
             f"Missing dependency '{name}'. Run: python -m pip install {name}"
         )
