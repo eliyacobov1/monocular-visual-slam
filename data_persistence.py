@@ -379,6 +379,24 @@ class RunDataStore:
         LOGGER.info("Saved control-plane report '%s' to %s", name, report_path)
         return report_path
 
+    def save_telemetry_summary(self, name: str, payload: Mapping[str, Any]) -> Path:
+        if not name:
+            raise ValueError("Telemetry summary name must be non-empty")
+        report_path = self._telemetry_dir / f"{sanitize_artifact_name(name)}.json"
+        report_payload = dict(payload)
+        report_payload.setdefault("determinism", self._determinism_payload())
+        report_payload.setdefault("recorded_at", _timestamp())
+        try:
+            report_path.write_text(
+                json.dumps(report_payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            LOGGER.exception("Failed to write telemetry summary '%s'", name)
+            raise RuntimeError("Failed to write telemetry summary") from exc
+        LOGGER.info("Saved telemetry summary '%s' to %s", name, report_path)
+        return report_path
+
     def save_solver_diagnostics_report(self, name: str, payload: Mapping[str, Any]) -> Path:
         if not name:
             raise ValueError("Solver diagnostics report name must be non-empty")

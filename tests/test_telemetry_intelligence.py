@@ -30,6 +30,21 @@ def test_telemetry_digest_summary() -> None:
     assert summary["per_stage"]["track"]["max_duration_s"] == pytest.approx(0.3)
 
 
+def test_telemetry_digest_memory_and_correlation() -> None:
+    digest = TelemetryDigest()
+    digest.update("optimize", 0.1, memory_delta_bytes=128.0, correlation_id="abc")
+    digest.update("optimize", 0.2, memory_delta_bytes=256.0, correlation_id="abc")
+    digest.update("track", 0.1, correlation_id="def")
+
+    summary = digest.summarize()
+
+    assert summary["memory_event_count"] == 2
+    assert summary["total_memory_delta_bytes"] == pytest.approx(384.0)
+    assert summary["per_stage"]["optimize"]["memory_delta_count"] == 2
+    assert summary["per_stage_correlation_ids"]["optimize"] == "abc"
+    assert summary["per_stage_correlation_ids"]["track"] == "def"
+
+
 def test_compare_telemetry_summaries() -> None:
     baseline = summarize_telemetry_events(
         [

@@ -78,6 +78,7 @@
 1. **Telemetry correlation & summaries**
    - Add per-stage telemetry correlation IDs and streaming summaries for runtime + memory deltas.
    - Emit unified telemetry bundles alongside run artifacts.
+   - Status: Complete
 2. **Benchmark governance**
    - Add explicit runtime/memory budgets per benchmark with deterministic reporting.
    - Implement gating thresholds for performance regressions and publish CI summaries.

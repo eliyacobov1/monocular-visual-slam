@@ -308,7 +308,13 @@ def _normalize_telemetry(payload: Mapping[str, Any]) -> dict[str, Any]:
         event_payload = {
             key: value
             for key, value in event.items()
-            if key not in ("timestamp",)
+            if key
+            not in (
+                "timestamp",
+                "memory_delta_bytes",
+                "memory_current_bytes",
+                "memory_peak_bytes",
+            )
         }
         normalized_events.append(event_payload)
     normalized = dict(payload)
