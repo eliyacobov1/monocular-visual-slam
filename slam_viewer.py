@@ -19,6 +19,7 @@ import math
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import patches
 from pathlib import Path
 from cam_intrinsics_estimation import make_K, load_K_from_file
 from demo_utils import ensure_sample_video, DEFAULT_VIDEO_PATH
@@ -101,10 +102,14 @@ def main() -> None:
     orb = cv2.ORB_create(1000)
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
     plt.ion()
-    fig = plt.figure(figsize=(10, 5), constrained_layout=True)
-    ax_img = fig.add_subplot(1, 2, 1)
-    ax_traj = fig.add_subplot(1, 2, 2)
+    fig = plt.figure(figsize=(12, 7), constrained_layout=True)
+    grid = fig.add_gridspec(2, 2, height_ratios=[3, 1])
+    ax_img = fig.add_subplot(grid[0, 0])
+    ax_traj = fig.add_subplot(grid[0, 1])
+    ax_status = fig.add_subplot(grid[1, :])
     ax_traj.set_title("Estimated trajectory")
     ax_traj.set_xlabel("X")
     ax_traj.set_ylabel("Z")
@@ -120,6 +125,48 @@ def main() -> None:
     prev_kp, prev_desc = orb.detectAndCompute(prev_gray, None)
 
     frame_id = 0
+    status_log: list[str] = []
+    status_text = ax_status.text(
+        0.02,
+        0.8,
+        "Status: waiting for frames",
+        fontsize=10,
+        fontweight="bold",
+        transform=ax_status.transAxes,
+    )
+    progress_outline = patches.Rectangle(
+        (0.02, 0.45),
+        0.96,
+        0.12,
+        linewidth=1,
+        edgecolor="#94a3b8",
+        facecolor="none",
+        transform=ax_status.transAxes,
+    )
+    progress_fill = patches.Rectangle(
+        (0.02, 0.45),
+        0.0,
+        0.12,
+        linewidth=0,
+        facecolor="#2563eb",
+        transform=ax_status.transAxes,
+    )
+    ax_status.add_patch(progress_outline)
+    ax_status.add_patch(progress_fill)
+    progress_label = ax_status.text(
+        0.02,
+        0.3,
+        "Progress: 0%",
+        fontsize=9,
+        transform=ax_status.transAxes,
+    )
+    log_label = ax_status.text(
+        0.02,
+        0.05,
+        "Log:\n-",
+        fontsize=8,
+        transform=ax_status.transAxes,
+    )
 
     try:
         while True:
@@ -192,6 +239,19 @@ def main() -> None:
                 cv2.circle(display, pt_curr, 2, color, -1)
 
             yaw, pitch, roll = rotation_to_euler_xyz(R)
+            status = "Tracking stable"
+            if len(matches) < 40:
+                status = "Low match density"
+            elif inlier_ratio < 0.2:
+                status = "Tracking lost"
+            elif inlier_ratio < 0.35:
+                status = "Unstable pose"
+            status_color = {
+                "Tracking stable": "#16a34a",
+                "Low match density": "#f97316",
+                "Unstable pose": "#f97316",
+                "Tracking lost": "#dc2626",
+            }.get(status, "#0f172a")
             text = (
                 f"Frame: {frame_id}\n"
                 f"Features: {len(kp)}\n"
@@ -215,6 +275,23 @@ def main() -> None:
                 transform=ax_img.transAxes,
                 bbox=dict(boxstyle="round", facecolor="black", alpha=0.5),
             )
+
+            progress = frame_id / total_frames if total_frames else 0.0
+            progress_fill.set_width(0.96 * progress)
+            status_text.set_text(f"Status: {status}")
+            status_text.set_color(status_color)
+            progress_label.set_text(
+                f"Progress: {progress * 100:.1f}% ({frame_id}/{total_frames or '—'})"
+            )
+            status_log.append(
+                f"Frame {frame_id}: {status} · {len(matches)} matches · "
+                f"inlier ratio {inlier_ratio:.2f}"
+            )
+            status_log = status_log[-4:]
+            log_label.set_text("Log:\n" + "\n".join(status_log))
+            ax_status.set_xlim(0, 1)
+            ax_status.set_ylim(0, 1)
+            ax_status.axis("off")
 
             fig.canvas.draw()
             fig.canvas.flush_events()

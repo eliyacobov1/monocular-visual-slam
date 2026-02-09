@@ -91,3 +91,24 @@
 - Telemetry summaries are deterministic and published for every run.
 - Benchmarks fail on budget regression with actionable deltas.
 - Final readiness report is a single artifact suitable for interviews and CI.
+
+---
+
+## Interface Clarity (User-First Readiness)
+**Objective:** Make the SLAM system immediately usable for demo interviews with
+clear UI labels, live status, and a one-command entry point.
+
+**Sequence of tasks**
+1. **Local GUI clarity upgrades** (Complete)
+   - Add labels, status indicators, and progress visualization to the Matplotlib viewer.
+2. **WebSocket dashboard restoration** (Complete)
+   - Provide a lightweight web dashboard with live tracking telemetry and logs.
+3. **One-command entry point** (Complete)
+   - Introduce a unified CLI for launching GUI or web interfaces with validation.
+4. **Getting Started refresh** (Complete)
+   - Rewrite README quickstart for non-technical reviewers.
+
+**Success criteria**
+- Local and web interfaces expose tracking health, progress, and pose summaries.
+- A single command launches the chosen interface with clear errors on failure.
+- Documentation reflects the updated workflow for interview demos.
