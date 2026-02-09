@@ -6,9 +6,8 @@ The left panel shows the current video frame with matched keypoints
 between the previous and current image.  The right panel plots the
 estimated 2‑D trajectory with the latest camera position highlighted.
 
-Optionally a third 3‑D panel visualises the path in space.  Per frame
-basic diagnostic information is overlayed on the image including the
-number of features, matches and the current pose.
+Per frame basic diagnostic information is overlayed on the image
+including the number of features, matches and the current pose.
 """
 
 from __future__ import annotations
@@ -44,6 +43,23 @@ def rotation_to_euler_xyz(R: np.ndarray) -> tuple[float, float, float]:
     return np.degrees([yaw, pitch, roll])
 
 
+def apply_axes_limits(
+    ax: plt.Axes,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    *,
+    padding: float = 0.25,
+) -> None:
+    if xs.size == 0 or ys.size == 0:
+        return
+    x_min, x_max = float(xs.min()), float(xs.max())
+    y_min, y_max = float(ys.min()), float(ys.max())
+    x_pad = max((x_max - x_min) * padding, 0.5)
+    y_pad = max((y_max - y_min) * padding, 0.5)
+    ax.set_xlim(x_min - x_pad, x_max + x_pad)
+    ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+
 # ------------------------------- main loop ---------------------------------
 
 def main() -> None:
@@ -58,9 +74,6 @@ def main() -> None:
     )
     parser.add_argument(
         "--step", action="store_true", help="Advance frames on key press"
-    )
-    parser.add_argument(
-        "--show3d", action="store_true", help="Display 3‑D scatter of the path"
     )
     args = parser.parse_args()
 
@@ -89,22 +102,14 @@ def main() -> None:
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
     plt.ion()
-    cols = 3 if args.show3d else 2
-    fig = plt.figure(figsize=(5 * cols, 5))
-    ax_img = fig.add_subplot(1, cols, 1)
-    ax_traj = fig.add_subplot(1, cols, 2)
+    fig = plt.figure(figsize=(10, 5), constrained_layout=True)
+    ax_img = fig.add_subplot(1, 2, 1)
+    ax_traj = fig.add_subplot(1, 2, 2)
     ax_traj.set_title("Estimated trajectory")
     ax_traj.set_xlabel("X")
     ax_traj.set_ylabel("Z")
     ax_traj.set_aspect("equal")
-
-    ax3d = None
-    if args.show3d:
-        ax3d = fig.add_subplot(1, 3, 3, projection="3d")
-        ax3d.set_title("3‑D path")
-        ax3d.set_xlabel("X")
-        ax3d.set_ylabel("Y")
-        ax3d.set_zlabel("Z")
+    ax_traj.grid(True, linestyle="--", alpha=0.4)
 
     poses = [np.eye(4)]
     positions = [np.zeros(3)]
@@ -175,15 +180,7 @@ def main() -> None:
             path_line.set_data(traj[:, 0], traj[:, 2])
             curr_point.remove()
             curr_point = ax_traj.scatter(traj[-1, 0], traj[-1, 2], c="r")
-
-            if ax3d is not None:
-                ax3d.clear()
-                ax3d.set_title("3‑D path")
-                ax3d.set_xlabel("X")
-                ax3d.set_ylabel("Y")
-                ax3d.set_zlabel("Z")
-                ax3d.plot(traj[:, 0], traj[:, 1], traj[:, 2], "b-")
-                ax3d.scatter(traj[-1, 0], traj[-1, 1], traj[-1, 2], c="r")
+            apply_axes_limits(ax_traj, traj[:, 0], traj[:, 2])
 
             # Draw matches and inliers on the frame
             display = frame.copy()
