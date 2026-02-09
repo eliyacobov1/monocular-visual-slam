@@ -20,9 +20,11 @@ from graph_optimization import (
     PoseGraphProblem,
     PoseGraphSnapshot,
     PoseGraphSolver,
+    ResidualHistogram,
     RobustLossConfig,
     SolverConfig,
     SolverResult,
+    build_residual_histogram,
     compute_conditioning_diagnostics,
 )
 
@@ -41,6 +43,9 @@ class OptimizationControlConfig:
     damping_multiplier: float = 2.0
     telemetry_quantiles: tuple[float, ...] = (0.5, 0.95, 0.99)
     event_log_capacity: int = 256
+    snapshot_thresholds: "SolverRegressionThresholds" = field(
+        default_factory=lambda: SolverRegressionThresholds()
+    )
 
     def __post_init__(self) -> None:
         if self.max_attempts <= 0:
@@ -57,6 +62,88 @@ class OptimizationControlConfig:
             raise ValueError("telemetry_quantiles must be non-empty")
         if self.event_log_capacity <= 0:
             raise ValueError("event_log_capacity must be positive")
+
+
+@dataclass(frozen=True)
+class SolverRegressionThresholds:
+    """Thresholds for solver regression gating."""
+
+    max_cost: float | None = None
+    max_iterations: int | None = None
+    max_cost_ratio: float | None = 0.25
+    max_iteration_ratio: float | None = 0.5
+
+
+@dataclass(frozen=True)
+class SolverRegressionGate:
+    """Regression gate evaluation for solver runs."""
+
+    status: str
+    cost: float
+    iterations: int
+    cost_delta: float | None
+    cost_ratio: float | None
+    iteration_delta: int | None
+    iteration_ratio: float | None
+    triggered: tuple[str, ...]
+    thresholds: dict[str, float | None]
+
+    def asdict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "cost": self.cost,
+            "iterations": self.iterations,
+            "cost_delta": self.cost_delta,
+            "cost_ratio": self.cost_ratio,
+            "iteration_delta": self.iteration_delta,
+            "iteration_ratio": self.iteration_ratio,
+            "triggered": list(self.triggered),
+            "thresholds": dict(self.thresholds),
+        }
+
+
+@dataclass(frozen=True)
+class SolverConvergenceState:
+    """Convergence summary for a solver run."""
+
+    status: str
+    message: str
+    success: bool
+    iterations: int
+    cost: float
+    residual_norm: float
+
+    def asdict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "message": self.message,
+            "success": self.success,
+            "iterations": self.iterations,
+            "cost": self.cost,
+            "residual_norm": self.residual_norm,
+        }
+
+
+@dataclass(frozen=True)
+class SolverSnapshot:
+    """Deterministic solver snapshot for diagnostics and regression gating."""
+
+    snapshot_digest: str
+    solver_name: str
+    iteration_diagnostics: tuple[IterationDiagnostics, ...]
+    residual_histogram: ResidualHistogram
+    convergence: SolverConvergenceState
+
+    def asdict(self) -> dict[str, object]:
+        return {
+            "snapshot_digest": self.snapshot_digest,
+            "solver_name": self.solver_name,
+            "iteration_diagnostics": [
+                _iteration_payload(entry) for entry in self.iteration_diagnostics
+            ],
+            "residual_histogram": self.residual_histogram.asdict(),
+            "convergence": self.convergence.asdict(),
+        }
 
 
 @dataclass(frozen=True)
@@ -171,6 +258,8 @@ class OptimizationRunReport:
     success: bool
     result: SolverResult
     telemetry: OptimizationTelemetrySummary
+    solver_snapshot: SolverSnapshot
+    regression_gate: SolverRegressionGate
     events: tuple[OptimizationStageEvent, ...]
     started_at_s: float
     finished_at_s: float
@@ -178,6 +267,22 @@ class OptimizationRunReport:
     @property
     def duration_s(self) -> float:
         return self.finished_at_s - self.started_at_s
+
+    def asdict(self) -> dict[str, object]:
+        return {
+            "snapshot_digest": self.snapshot_digest,
+            "solver_name": self.solver_name,
+            "attempts": self.attempts,
+            "success": self.success,
+            "result": asdict(self.result),
+            "telemetry": asdict(self.telemetry),
+            "solver_snapshot": self.solver_snapshot.asdict(),
+            "regression_gate": self.regression_gate.asdict(),
+            "events": [event.asdict() for event in self.events],
+            "started_at_s": self.started_at_s,
+            "finished_at_s": self.finished_at_s,
+            "duration_s": self.duration_s,
+        }
 
 
 class OptimizationSupervisor:
@@ -197,6 +302,7 @@ class OptimizationSupervisor:
         self._last_snapshot_digest: str | None = None
         self._last_solver_name: str | None = None
         self._last_cost: float | None = None
+        self._last_iterations: int | None = None
 
     @property
     def event_log(self) -> DeterministicEventLog:
@@ -234,6 +340,19 @@ class OptimizationSupervisor:
             telemetry = _summarize_telemetry((), self._config.telemetry_quantiles)
             finished_at_s = time.perf_counter()
             events = tuple(self._event_log.snapshot())
+            solver_snapshot = self._build_solver_snapshot(
+                snapshot=snapshot,
+                solver_name=solver_name,
+                diagnostics=(),
+                result=last_result,
+                problem=problem,
+                x_opt=x_opt,
+            )
+            regression_gate = self._evaluate_regression_gate(
+                result=last_result,
+                last_cost=self._last_cost,
+                last_iterations=self._last_iterations,
+            )
             report = OptimizationRunReport(
                 snapshot_digest=snapshot.digest(),
                 solver_name=solver_name,
@@ -241,6 +360,8 @@ class OptimizationSupervisor:
                 success=False,
                 result=last_result,
                 telemetry=telemetry,
+                solver_snapshot=solver_snapshot,
+                regression_gate=regression_gate,
                 events=events,
                 started_at_s=started_at_s,
                 finished_at_s=finished_at_s,
@@ -254,6 +375,7 @@ class OptimizationSupervisor:
                 self._last_snapshot_digest = report.snapshot_digest
                 self._last_solver_name = solver_name
                 self._last_cost = last_result.cost
+                self._last_iterations = last_result.iterations
             return list(x_opt), last_result, report
 
         for attempt in range(self._config.max_attempts):
@@ -275,6 +397,8 @@ class OptimizationSupervisor:
                 linear_solver_tol=solver_config.linear_solver_tol,
                 max_condition_number=solver_config.max_condition_number,
                 min_diagonal=solver_config.min_diagonal,
+                residual_histogram_bins=solver_config.residual_histogram_bins,
+                residual_histogram_range=solver_config.residual_histogram_range,
             )
             self._record_event(
                 stage="solver",
@@ -344,6 +468,19 @@ class OptimizationSupervisor:
         telemetry = _summarize_telemetry(diagnostics, self._config.telemetry_quantiles)
         finished_at_s = time.perf_counter()
         events = tuple(self._event_log.snapshot())
+        solver_snapshot = self._build_solver_snapshot(
+            snapshot=snapshot,
+            solver_name=solver_name,
+            diagnostics=tuple(diagnostics),
+            result=last_result,
+            problem=problem,
+            x_opt=x_opt,
+        )
+        regression_gate = self._evaluate_regression_gate(
+            result=last_result,
+            last_cost=self._last_cost,
+            last_iterations=self._last_iterations,
+        )
         report = OptimizationRunReport(
             snapshot_digest=snapshot.digest(),
             solver_name=solver_name,
@@ -351,6 +488,8 @@ class OptimizationSupervisor:
             success=last_result.success,
             result=last_result,
             telemetry=telemetry,
+            solver_snapshot=solver_snapshot,
+            regression_gate=regression_gate,
             events=events,
             started_at_s=started_at_s,
             finished_at_s=finished_at_s,
@@ -367,7 +506,93 @@ class OptimizationSupervisor:
             self._last_snapshot_digest = report.snapshot_digest
             self._last_solver_name = solver_name
             self._last_cost = last_result.cost
+            self._last_iterations = last_result.iterations
         return list(x_opt), last_result, report
+
+    def _build_solver_snapshot(
+        self,
+        *,
+        snapshot: PoseGraphSnapshot,
+        solver_name: str,
+        diagnostics: Iterable[IterationDiagnostics],
+        result: SolverResult,
+        problem: PoseGraphProblem,
+        x_opt: np.ndarray,
+    ) -> SolverSnapshot:
+        residuals = problem.residual_fn(x_opt)
+        residual_histogram = build_residual_histogram(
+            residuals,
+            bins=snapshot.solver_config.residual_histogram_bins,
+            value_range=snapshot.solver_config.residual_histogram_range,
+        )
+        convergence = SolverConvergenceState(
+            status="converged" if result.success else "failed",
+            message=result.message,
+            success=result.success,
+            iterations=result.iterations,
+            cost=result.cost,
+            residual_norm=result.residual_norm,
+        )
+        return SolverSnapshot(
+            snapshot_digest=snapshot.digest(),
+            solver_name=solver_name,
+            iteration_diagnostics=tuple(diagnostics),
+            residual_histogram=residual_histogram,
+            convergence=convergence,
+        )
+
+    def _evaluate_regression_gate(
+        self,
+        *,
+        result: SolverResult,
+        last_cost: float | None,
+        last_iterations: int | None,
+    ) -> SolverRegressionGate:
+        thresholds = self._config.snapshot_thresholds
+        triggered: list[str] = []
+        cost_delta: float | None = None
+        cost_ratio: float | None = None
+        iteration_delta: int | None = None
+        iteration_ratio: float | None = None
+
+        if thresholds.max_cost is not None and result.cost > thresholds.max_cost:
+            triggered.append("max_cost")
+        if thresholds.max_iterations is not None and result.iterations > thresholds.max_iterations:
+            triggered.append("max_iterations")
+        if last_cost is not None:
+            cost_delta = result.cost - last_cost
+            if last_cost != 0:
+                cost_ratio = cost_delta / abs(last_cost)
+            if thresholds.max_cost_ratio is not None and cost_ratio is not None:
+                if cost_ratio > thresholds.max_cost_ratio:
+                    triggered.append("max_cost_ratio")
+        if last_iterations is not None:
+            iteration_delta = result.iterations - last_iterations
+            if last_iterations != 0:
+                iteration_ratio = iteration_delta / abs(last_iterations)
+            if thresholds.max_iteration_ratio is not None and iteration_ratio is not None:
+                if iteration_ratio > thresholds.max_iteration_ratio:
+                    triggered.append("max_iteration_ratio")
+
+        status = "baseline" if last_cost is None and last_iterations is None else "pass"
+        if triggered:
+            status = "regressed"
+        return SolverRegressionGate(
+            status=status,
+            cost=result.cost,
+            iterations=result.iterations,
+            cost_delta=cost_delta,
+            cost_ratio=cost_ratio,
+            iteration_delta=iteration_delta,
+            iteration_ratio=iteration_ratio,
+            triggered=tuple(triggered),
+            thresholds={
+                "max_cost": thresholds.max_cost,
+                "max_iterations": thresholds.max_iterations,
+                "max_cost_ratio": thresholds.max_cost_ratio,
+                "max_iteration_ratio": thresholds.max_iteration_ratio,
+            },
+        )
 
     def _check_conditioning(
         self,
@@ -475,6 +700,20 @@ def _summarize_telemetry(
     )
 
 
+def _iteration_payload(entry: IterationDiagnostics) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "iteration": entry.iteration,
+        "residual_norm": entry.residual_norm,
+        "step_norm": entry.step_norm,
+        "linear_solver_iterations": entry.linear_solver_iterations,
+        "linear_solver_residual": entry.linear_solver_residual,
+        "damping": entry.damping,
+    }
+    if entry.residual_histogram is not None:
+        payload["residual_histogram"] = entry.residual_histogram.asdict()
+    return payload
+
+
 __all__ = [
     "DeterministicEventLog",
     "MetricTracker",
@@ -483,4 +722,8 @@ __all__ = [
     "OptimizationStageEvent",
     "OptimizationSupervisor",
     "OptimizationTelemetrySummary",
+    "SolverConvergenceState",
+    "SolverRegressionGate",
+    "SolverRegressionThresholds",
+    "SolverSnapshot",
 ]

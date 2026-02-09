@@ -52,7 +52,7 @@
 **Objective:** Guarantee solver stability, loop-closure fidelity, and relocalization reliability.
 
 **Sequence of tasks**
-1. **Solver diagnostics + snapshots**
+1. **Solver diagnostics + snapshots** (Complete)
    - Persist per-iteration solver stats, residual histograms, and convergence state for each run.
    - Add deterministic solver snapshots with regression thresholds for cost and iteration spikes.
 2. **Loop-closure validation suite**

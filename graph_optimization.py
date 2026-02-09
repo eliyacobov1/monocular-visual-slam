@@ -49,6 +49,8 @@ class SolverConfig:
     linear_solver_tol: float = 1e-8
     max_condition_number: float = 1e8
     min_diagonal: float = 1e-12
+    residual_histogram_bins: int = 20
+    residual_histogram_range: tuple[float, float] = (0.0, 10.0)
 
     def __post_init__(self) -> None:
         if self.max_iterations <= 0:
@@ -67,6 +69,13 @@ class SolverConfig:
             raise ValueError("max_condition_number must be positive")
         if self.min_diagonal <= 0:
             raise ValueError("min_diagonal must be positive")
+        if self.residual_histogram_bins <= 0:
+            raise ValueError("residual_histogram_bins must be positive")
+        if len(self.residual_histogram_range) != 2:
+            raise ValueError("residual_histogram_range must have two values")
+        min_edge, max_edge = self.residual_histogram_range
+        if min_edge >= max_edge:
+            raise ValueError("residual_histogram_range must be ascending")
 
 
 @dataclass(frozen=True)
@@ -79,6 +88,7 @@ class IterationDiagnostics:
     linear_solver_iterations: int
     linear_solver_residual: float
     damping: float
+    residual_histogram: "ResidualHistogram | None" = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +97,20 @@ class SolverDiagnostics:
 
     iterations: tuple[IterationDiagnostics, ...]
     status: str
+
+
+@dataclass(frozen=True)
+class ResidualHistogram:
+    """Deterministic histogram of residual magnitudes."""
+
+    bin_edges: tuple[float, ...]
+    counts: tuple[int, ...]
+
+    def asdict(self) -> dict[str, object]:
+        return {
+            "bin_edges": list(self.bin_edges),
+            "counts": list(self.counts),
+        }
 
 
 @dataclass(frozen=True)
@@ -283,6 +307,20 @@ class ScipyLeastSquaresSolver:
             diagnostics=None,
         )
         return result.x, summary
+
+
+def build_residual_histogram(
+    residuals: Iterable[float],
+    *,
+    bins: int,
+    value_range: tuple[float, float],
+) -> ResidualHistogram:
+    values = np.array([float(value) for value in residuals], dtype=float)
+    counts, edges = np.histogram(values, bins=bins, range=value_range)
+    return ResidualHistogram(
+        bin_edges=tuple(float(edge) for edge in edges),
+        counts=tuple(int(count) for count in counts),
+    )
 
 
 class BlockSparseMatrix:
@@ -542,11 +580,13 @@ class GaussNewtonSolver:
             num_blocks = problem.parameter_size // problem.block_size
             normal = BlockSparseNormalEquation(problem.block_size, num_blocks)
             residual_norm = 0.0
+            residual_samples: list[float] = []
             for block in linearized:
                 robust_weight = _robust_weight(block.residual, loss_config)
                 weight = float(block.weight) * robust_weight
                 sqrt_w = np.sqrt(weight)
                 weighted_residual = sqrt_w * block.residual
+                residual_samples.append(float(np.linalg.norm(block.residual)))
                 residual_norm += float(weighted_residual @ weighted_residual)
                 jac_i = sqrt_w * block.jacobian_i
                 normal.add_block(block.i, block.i, jac_i.T @ jac_i)
@@ -583,6 +623,11 @@ class GaussNewtonSolver:
                     linear_solver_iterations=cg_result.iterations,
                     linear_solver_residual=cg_result.residual_norm,
                     damping=solver_config.damping,
+                    residual_histogram=build_residual_histogram(
+                        residual_samples,
+                        bins=solver_config.residual_histogram_bins,
+                        value_range=solver_config.residual_histogram_range,
+                    ),
                 )
             )
             x += solver_config.step_scale * step
@@ -626,12 +671,14 @@ __all__ = [
     "PoseGraphProblem",
     "PoseGraphSnapshot",
     "PoseGraphSolver",
+    "ResidualHistogram",
     "RobustLossConfig",
     "RobustLossType",
     "SolverConfig",
     "SolverDiagnostics",
     "SolverRegistry",
     "SolverResult",
+    "build_residual_histogram",
     "compute_conditioning_diagnostics",
     "get_solver_registry",
 ]
