@@ -45,6 +45,8 @@ def test_slam_api_runs_with_blank_frames(tmp_path: Path) -> None:
     assert result.diagnostics_path.exists()
     assert result.telemetry_path is not None
     assert result.telemetry_path.exists()
+    assert result.telemetry_summary_path is not None
+    assert result.telemetry_summary_path.exists()
     assert len(result.frame_diagnostics) == 2
     assert result.map_snapshot_path is None
     assert result.map_stats is None

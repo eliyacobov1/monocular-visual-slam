@@ -18,6 +18,7 @@ LOGGER = logging.getLogger(__name__)
 class TelemetryEventLike(Protocol):
     name: str
     duration_s: float
+    metadata: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -203,8 +204,15 @@ class _StageStats:
         self.mean = 0.0
         self.m2 = 0.0
         self._quantiles = {float(q): P2Quantile(float(q)) for q in quantiles}
+        self.memory_count = 0
+        self.memory_total = 0.0
+        self.memory_min = float("inf")
+        self.memory_max = float("-inf")
+        self.memory_mean = 0.0
+        self.memory_m2 = 0.0
+        self._memory_quantiles = {float(q): P2Quantile(float(q)) for q in quantiles}
 
-    def update(self, duration: float) -> None:
+    def update(self, duration: float, memory_delta: float | None = None) -> None:
         duration = float(duration)
         self.count += 1
         self.total_duration += duration
@@ -216,6 +224,20 @@ class _StageStats:
         self.m2 += delta * delta2
         for quantile in self._quantiles.values():
             quantile.update(duration)
+        if memory_delta is not None:
+            self._update_memory(float(memory_delta))
+
+    def _update_memory(self, value: float) -> None:
+        self.memory_count += 1
+        self.memory_total += value
+        self.memory_min = min(self.memory_min, value)
+        self.memory_max = max(self.memory_max, value)
+        delta = value - self.memory_mean
+        self.memory_mean += delta / self.memory_count
+        delta2 = value - self.memory_mean
+        self.memory_m2 += delta * delta2
+        for quantile in self._memory_quantiles.values():
+            quantile.update(value)
 
     def summary(self) -> dict[str, float | int]:
         if self.count == 0:
@@ -241,6 +263,22 @@ class _StageStats:
         for quantile, estimator in self._quantiles.items():
             key = f"p{int(round(quantile * 100))}_duration_s"
             summary[key] = float(estimator.value())
+        if self.memory_count > 0:
+            memory_variance = self.memory_m2 / (self.memory_count - 1) if self.memory_count > 1 else 0.0
+            summary.update(
+                {
+                    "memory_delta_count": int(self.memory_count),
+                    "memory_delta_total_bytes": float(self.memory_total),
+                    "memory_delta_mean_bytes": float(self.memory_mean),
+                    "memory_delta_min_bytes": float(self.memory_min),
+                    "memory_delta_max_bytes": float(self.memory_max),
+                    "memory_delta_variance_bytes": float(memory_variance),
+                    "memory_delta_stdev_bytes": float(math.sqrt(memory_variance)),
+                }
+            )
+            for quantile, estimator in self._memory_quantiles.items():
+                key = f"memory_delta_p{int(round(quantile * 100))}_bytes"
+                summary[key] = float(estimator.value())
         return summary
 
 
@@ -257,19 +295,41 @@ class TelemetryDigest:
         self._lock = threading.Lock() if thread_safe else None
         self.total_events = 0
         self.total_duration = 0.0
+        self.total_memory_delta = 0.0
+        self.total_memory_events = 0
         self.per_stage: dict[str, _StageStats] = {}
+        self._stage_correlation_ids: dict[str, str] = {}
 
-    def update(self, name: str, duration: float) -> None:
+    def update(
+        self,
+        name: str,
+        duration: float,
+        *,
+        memory_delta_bytes: float | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
         if self._lock is None:
-            self._update_locked(name, duration)
+            self._update_locked(name, duration, memory_delta_bytes, correlation_id)
         else:
             with self._lock:
-                self._update_locked(name, duration)
+                self._update_locked(name, duration, memory_delta_bytes, correlation_id)
 
     def ingest_event(self, event: Mapping[str, Any] | TelemetryEventLike) -> None:
         name = str(getattr(event, "name", None) or event.get("name") or "unknown")
         duration = float(getattr(event, "duration_s", None) or event.get("duration_s", 0.0))
-        self.update(name, duration)
+        metadata = getattr(event, "metadata", None) or event.get("metadata") or {}
+        memory_delta = None
+        if isinstance(metadata, Mapping):
+            memory_delta = metadata.get("memory_delta_bytes")
+            correlation_id = metadata.get("correlation_id")
+        else:
+            correlation_id = None
+        self.update(
+            name,
+            duration,
+            memory_delta_bytes=float(memory_delta) if memory_delta is not None else None,
+            correlation_id=str(correlation_id) if correlation_id is not None else None,
+        )
 
     def ingest_events(self, events: Iterable[Mapping[str, Any] | TelemetryEventLike]) -> None:
         for event in events:
@@ -281,23 +341,53 @@ class TelemetryDigest:
         with self._lock:
             return self._summarize_locked()
 
-    def _update_locked(self, name: str, duration: float) -> None:
+    def _update_locked(
+        self,
+        name: str,
+        duration: float,
+        memory_delta_bytes: float | None,
+        correlation_id: str | None,
+    ) -> None:
         self.total_events += 1
         self.total_duration += float(duration)
         stats = self.per_stage.get(name)
         if stats is None:
             stats = _StageStats(self._quantiles)
             self.per_stage[name] = stats
-        stats.update(duration)
+        stats.update(duration, memory_delta_bytes)
+        if memory_delta_bytes is not None:
+            self.total_memory_events += 1
+            self.total_memory_delta += float(memory_delta_bytes)
+        if correlation_id:
+            self._record_correlation_id(name, correlation_id)
+
+    def _record_correlation_id(self, stage: str, correlation_id: str) -> None:
+        existing = self._stage_correlation_ids.get(stage)
+        if existing is None:
+            self._stage_correlation_ids[stage] = correlation_id
+            return
+        if existing != correlation_id:
+            LOGGER.warning(
+                "Telemetry correlation ID mismatch",
+                extra={"stage": stage, "existing": existing, "incoming": correlation_id},
+            )
+            self._stage_correlation_ids[stage] = min(existing, correlation_id)
 
     def _summarize_locked(self) -> dict[str, Any]:
         per_stage = {name: stats.summary() for name, stats in self.per_stage.items()}
         mean_duration = self.total_duration / self.total_events if self.total_events else 0.0
+        mean_memory_delta = (
+            self.total_memory_delta / self.total_memory_events if self.total_memory_events else 0.0
+        )
         return {
             "event_count": int(self.total_events),
             "total_duration_s": float(self.total_duration),
             "mean_duration_s": float(mean_duration),
+            "memory_event_count": int(self.total_memory_events),
+            "total_memory_delta_bytes": float(self.total_memory_delta),
+            "mean_memory_delta_bytes": float(mean_memory_delta),
             "per_stage": per_stage,
+            "per_stage_correlation_ids": dict(sorted(self._stage_correlation_ids.items())),
         }
 
 
@@ -358,6 +448,11 @@ def telemetry_metrics_from_summary(summary: Mapping[str, Any]) -> dict[str, floa
         "telemetry_event_count": float(summary.get("event_count", 0.0)),
         "telemetry_total_duration_s": float(summary.get("total_duration_s", 0.0)),
         "telemetry_mean_duration_s": float(summary.get("mean_duration_s", 0.0)),
+        "telemetry_memory_event_count": float(summary.get("memory_event_count", 0.0)),
+        "telemetry_total_memory_delta_bytes": float(
+            summary.get("total_memory_delta_bytes", 0.0)
+        ),
+        "telemetry_mean_memory_delta_bytes": float(summary.get("mean_memory_delta_bytes", 0.0)),
     }
     per_stage = summary.get("per_stage", {})
     if isinstance(per_stage, dict):
@@ -371,6 +466,30 @@ def telemetry_metrics_from_summary(summary: Mapping[str, Any]) -> dict[str, floa
             metrics[f"{prefix}_p99_duration_s"] = float(stats.get("p99_duration_s", 0.0))
             metrics[f"{prefix}_max_duration_s"] = float(stats.get("max_duration_s", 0.0))
             metrics[f"{prefix}_stdev_duration_s"] = float(stats.get("stdev_duration_s", 0.0))
+            metrics[f"{prefix}_memory_delta_count"] = float(
+                stats.get("memory_delta_count", 0.0)
+            )
+            metrics[f"{prefix}_memory_delta_mean_bytes"] = float(
+                stats.get("memory_delta_mean_bytes", 0.0)
+            )
+            metrics[f"{prefix}_memory_delta_p50_bytes"] = float(
+                stats.get("memory_delta_p50_bytes", 0.0)
+            )
+            metrics[f"{prefix}_memory_delta_p90_bytes"] = float(
+                stats.get("memory_delta_p90_bytes", 0.0)
+            )
+            metrics[f"{prefix}_memory_delta_p95_bytes"] = float(
+                stats.get("memory_delta_p95_bytes", 0.0)
+            )
+            metrics[f"{prefix}_memory_delta_p99_bytes"] = float(
+                stats.get("memory_delta_p99_bytes", 0.0)
+            )
+            metrics[f"{prefix}_memory_delta_max_bytes"] = float(
+                stats.get("memory_delta_max_bytes", 0.0)
+            )
+            metrics[f"{prefix}_memory_delta_stdev_bytes"] = float(
+                stats.get("memory_delta_stdev_bytes", 0.0)
+            )
     return metrics
 
 

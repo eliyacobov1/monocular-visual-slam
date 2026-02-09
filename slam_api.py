@@ -29,7 +29,15 @@ from robust_pose_estimator import (
     RobustPoseEstimator,
     RobustPoseEstimatorConfig,
 )
-from run_telemetry import RunTelemetryRecorder, TelemetryEvent, TelemetrySink, timed_event
+from telemetry_intelligence import summarize_telemetry_streaming
+from run_telemetry import (
+    RunTelemetryRecorder,
+    TelemetryCorrelationConfig,
+    TelemetryCorrelationRegistry,
+    TelemetryEvent,
+    TelemetrySink,
+    timed_event,
+)
 from keyframe_manager import KeyframeManager
 from map_builder import MapBuilderConfig, MapBuildStats, MapSnapshotBuilder
 from persistent_map import MapRelocalizer, PersistentMapSnapshot, PersistentMapStore
@@ -109,6 +117,7 @@ class SLAMRunResult:
     metrics_path: Path
     diagnostics_path: Path
     telemetry_path: Path | None
+    telemetry_summary_path: Path | None
     control_plane_report_path: Path | None
     frame_diagnostics: tuple[FrameDiagnostics, ...]
     map_snapshot_path: Path | None
@@ -152,6 +161,13 @@ class SLAMSystem:
         )
         self.trajectory = self.data_store.create_accumulator("slam_trajectory")
         self.telemetry = self._build_telemetry_sink()
+        self._telemetry_correlation = TelemetryCorrelationRegistry(
+            TelemetryCorrelationConfig(
+                seed=config.seed,
+                config_hash=config.config_hash,
+                run_id=config.run_id,
+            )
+        )
         self.frame_diagnostics: list[FrameDiagnostics] = []
         self._prev_frame: np.ndarray | None = None
         self._prev_kp: list[cv2.KeyPoint] | None = None
@@ -188,7 +204,12 @@ class SLAMSystem:
     def process_frame(self, frame: np.ndarray, timestamp: float) -> np.ndarray:
         if frame.ndim not in (2, 3):
             raise ValueError("Frame must be a grayscale or BGR image")
-        with timed_event("frame_process", self.telemetry, {"frame_id": self._frame_id}):
+        with timed_event(
+            "frame_process",
+            self.telemetry,
+            self._telemetry_metadata("frame_process", frame_id=self._frame_id),
+            track_memory=True,
+        ):
             if frame.ndim == 3:
                 frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             else:
@@ -197,7 +218,8 @@ class SLAMSystem:
             with timed_event(
                 "feature_detect",
                 self.telemetry,
-                {"frame_id": self._frame_id},
+                self._telemetry_metadata("feature_detect", frame_id=self._frame_id),
+                track_memory=True,
             ):
                 kp, desc = self.feature_pipeline.detect_and_describe(frame_gray)
         return self._process_frame_with_features(frame_gray, timestamp, kp, desc)
@@ -223,7 +245,12 @@ class SLAMSystem:
             )
             return self._current_pose.copy()
 
-        with timed_event("feature_match", self.telemetry, {"frame_id": self._frame_id}):
+        with timed_event(
+            "feature_match",
+            self.telemetry,
+            self._telemetry_metadata("feature_match", frame_id=self._frame_id),
+            track_memory=True,
+        ):
             matches = self.feature_pipeline.match(self._prev_desc, descriptors)
         if len(matches) < self.config.pose_config.min_matches:
             LOGGER.warning("Frame %d rejected: not enough matches", self._frame_id)
@@ -246,7 +273,12 @@ class SLAMSystem:
             with timed_event(
                 "pose_estimate",
                 self.telemetry,
-                {"frame_id": self._frame_id, "match_count": len(matches)},
+                self._telemetry_metadata(
+                    "pose_estimate",
+                    frame_id=self._frame_id,
+                    match_count=len(matches),
+                ),
+                track_memory=True,
             ):
                 pose_estimate = self.pose_estimator.estimate_pose(
                     kp1=self._prev_kp or [],
@@ -266,6 +298,7 @@ class SLAMSystem:
                         "reason": exc.reason,
                         "recovery_action": exc.recovery_action,
                         "metrics": exc.metrics,
+                        **self._telemetry_metadata("pose_stability_gate"),
                     },
                 )
                 self.telemetry.record_event(event)
@@ -305,6 +338,7 @@ class SLAMSystem:
             metadata={
                 "frame_id": self._frame_id,
                 "reason": reason or "unspecified",
+                **self._telemetry_metadata("tracking_loss_injected"),
             },
         )
         self.telemetry.record_event(event)
@@ -409,6 +443,7 @@ class SLAMSystem:
     def finalize_run(self) -> SLAMRunResult:
         map_snapshot_path = None
         map_stats = None
+        telemetry_summary_path = None
         map_snapshot = self._build_map_snapshot()
         if map_snapshot is not None:
             map_bundle = self.data_store.save_map_snapshot("slam_map", map_snapshot)
@@ -440,12 +475,21 @@ class SLAMSystem:
         diagnostics_path = self.data_store.save_frame_diagnostics(diagnostics_bundle)
         if isinstance(self.telemetry, RunTelemetryRecorder):
             self.telemetry.flush()
+            try:
+                summary = summarize_telemetry_streaming(self.telemetry.path)
+                telemetry_summary_path = self.data_store.save_telemetry_summary(
+                    f"{self.config.telemetry_name}_summary",
+                    summary,
+                )
+            except Exception as exc:
+                LOGGER.warning("Failed to build telemetry summary (%s)", exc)
         return SLAMRunResult(
             run_dir=self.data_store.metadata.run_dir,
             trajectory_path=trajectory_path,
             metrics_path=metrics_path,
             diagnostics_path=diagnostics_path,
             telemetry_path=self.telemetry.path if isinstance(self.telemetry, RunTelemetryRecorder) else None,
+            telemetry_summary_path=telemetry_summary_path,
             control_plane_report_path=self._control_plane_report_path,
             frame_diagnostics=tuple(self.frame_diagnostics),
             map_snapshot_path=map_snapshot_path,
@@ -461,6 +505,7 @@ class SLAMSystem:
                 "frame_id": result.seq_id,
                 "feature_queue_wait_s": result.feature_queue_wait_s,
                 "drop_reason": result.drop_reason,
+                **self._telemetry_metadata("tracking_control"),
             },
         )
         self.telemetry.record_event(event)
@@ -497,6 +542,7 @@ class SLAMSystem:
                 "queue_wait_s": feature_result.queue_wait_s,
                 "cache_hit": feature_result.cache_hit,
                 "error": feature_result.error,
+                **self._telemetry_metadata("feature_detect_async"),
             },
         )
         self.telemetry.record_event(feature_event)
@@ -610,7 +656,23 @@ class SLAMSystem:
         if not self.config.enable_telemetry:
             return _NullTelemetrySink()
         telemetry_path = self.data_store.telemetry_path(self.config.telemetry_name)
-        return RunTelemetryRecorder(telemetry_path, determinism=self._determinism.metadata())
+        return RunTelemetryRecorder(
+            telemetry_path,
+            determinism=self._determinism.metadata(),
+            correlation_registry=TelemetryCorrelationRegistry(
+                TelemetryCorrelationConfig(
+                    seed=self.config.seed,
+                    config_hash=self.config.config_hash,
+                    run_id=self.config.run_id,
+                )
+            ),
+        )
+
+    def _telemetry_metadata(self, stage: str, **extra: Any) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"stage": stage}
+        metadata["correlation_id"] = self._telemetry_correlation.correlation_id(stage)
+        metadata.update(extra)
+        return metadata
 
     def _maybe_add_keyframe(
         self,
@@ -631,7 +693,12 @@ class SLAMSystem:
     def _build_map_snapshot(self) -> PersistentMapSnapshot | None:
         if not self._keyframe_manager.keyframes:
             return None
-        with timed_event("map_snapshot_build", self.telemetry, {"keyframes": len(self._keyframe_manager.keyframes)}):
+        with timed_event(
+            "map_snapshot_build",
+            self.telemetry,
+            self._telemetry_metadata("map_snapshot_build", keyframes=len(self._keyframe_manager.keyframes)),
+            track_memory=True,
+        ):
             snapshot, stats = self._map_builder.build_snapshot(self._keyframe_manager.keyframes)
         self._last_map_snapshot = snapshot
         self._last_map_stats = stats
@@ -645,7 +712,8 @@ class SLAMSystem:
         with timed_event(
             "map_snapshot_refresh",
             self.telemetry,
-            {"keyframes": len(self._keyframe_manager.keyframes)},
+            self._telemetry_metadata("map_snapshot_refresh", keyframes=len(self._keyframe_manager.keyframes)),
+            track_memory=True,
         ):
             snapshot, stats = self._map_builder.build_snapshot(self._keyframe_manager.keyframes)
         self._relocalizer_snapshot = snapshot
@@ -679,7 +747,8 @@ class SLAMSystem:
         with timed_event(
             "relocalization_search",
             self.telemetry,
-            {"frame_id": self._frame_id},
+            self._telemetry_metadata("relocalization_search", frame_id=self._frame_id),
+            track_memory=True,
         ):
             result = relocalizer.relocalize(keypoints, descriptors)
         if result is None:
