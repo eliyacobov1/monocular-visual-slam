@@ -82,6 +82,7 @@
 2. **Benchmark governance**
    - Add explicit runtime/memory budgets per benchmark with deterministic reporting.
    - Implement gating thresholds for performance regressions and publish CI summaries.
+   - Status: Complete
 3. **Release-quality reporting**
    - Add a deterministic “Senior Interview Readiness” report bundling control-plane health, telemetry, and evaluation metrics.
 

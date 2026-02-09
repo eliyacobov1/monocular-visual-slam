@@ -7,7 +7,7 @@ evaluation. The platform must be interview-ready for Staff/Principal roles:
 modular, observable, and benchmark-gated.
 
 ## Project Readiness
-- Status: In progress (Sprint 1 deterministic ordering + data integrity + stability gates + determinism validation suite complete; Sprint 2 control-plane supervisor + backpressure/circuit-breaker escalation + failure injection + chaos harness complete; Sprint 3 solver diagnostics + snapshots + loop-closure validation suite + relocalization regression gates complete; Sprint 4 telemetry correlation + streaming summaries complete).
+- Status: In progress (Sprint 1 deterministic ordering + data integrity + stability gates + determinism validation suite complete; Sprint 2 control-plane supervisor + backpressure/circuit-breaker escalation + failure injection + chaos harness complete; Sprint 3 solver diagnostics + snapshots + loop-closure validation suite + relocalization regression gates complete; Sprint 4 telemetry correlation + streaming summaries + benchmark governance complete).
 
 ## Non-Negotiables
 1. **Determinism everywhere**: fixed seeds, reproducible ordering, stable artifacts.
